@@ -51,6 +51,12 @@ describe("secondsToFrameUnits", () => {
     expect(secondsToFrameUnits(0.017, ED, 30)).toBe(FRAME);
   });
 
+  test("returns integer units at fractional frame rates", () => {
+    for (const s of [0.04, 18.2333, 28.45, 159.8]) {
+      expect(Number.isInteger(secondsToFrameUnits(s, ED, 29.97))).toBe(true);
+    }
+  });
+
   test("snaps a real mid-frame transcript timestamp", () => {
     // 28.45s = 853.5 frames at 30fps; previously produced a half-frame offset.
     const u = secondsToFrameUnits(28.45, ED, 30);
