@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { secondsToUnits, unitsToSeconds } from "../src/time.ts";
+import { secondsToFrameUnits, secondsToUnits, unitsToSeconds } from "../src/time.ts";
 
 const ED = 705600000; // verified project-level editRate, Camtasia 2026.x
 
@@ -28,6 +28,34 @@ describe("secondsToUnits", () => {
 
   test("works with per-source editRates too", () => {
     expect(secondsToUnits(2, 44100)).toBe(88200);
+  });
+});
+
+describe("secondsToFrameUnits", () => {
+  const FRAME = ED / 30; // 23520000 units per frame at 30fps
+
+  test("snaps to whole frame boundaries", () => {
+    for (const s of [0.04, 18.2333, 46.3, 71.3167, 159.8]) {
+      expect(secondsToFrameUnits(s, ED, 30) % FRAME).toBe(0);
+    }
+  });
+
+  test("exact frame times are unchanged", () => {
+    expect(secondsToFrameUnits(1, ED, 30)).toBe(ED);
+    expect(secondsToFrameUnits(1 / 30, ED, 30)).toBe(FRAME);
+  });
+
+  test("rounds to the nearest frame", () => {
+    // 0.0166 * 30 = 0.498 frames, rounds to 0; 0.017 * 30 = 0.51, rounds to 1.
+    expect(secondsToFrameUnits(0.0166, ED, 30)).toBe(0);
+    expect(secondsToFrameUnits(0.017, ED, 30)).toBe(FRAME);
+  });
+
+  test("snaps a real mid-frame transcript timestamp", () => {
+    // 28.45s = 853.5 frames at 30fps; previously produced a half-frame offset.
+    const u = secondsToFrameUnits(28.45, ED, 30);
+    expect(u % FRAME).toBe(0);
+    expect(u / FRAME).toBe(854);
   });
 });
 
