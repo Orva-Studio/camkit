@@ -10,6 +10,17 @@ export function secondsToUnits(seconds: number, editRate: number): number {
   return Math.round(seconds * editRate);
 }
 
+/**
+ * Convert seconds to project units snapped to the nearest whole video frame.
+ * Camtasia's timeline ruler and playhead only move in whole frames, so cuts
+ * made at sub-frame positions (e.g. millisecond transcript timestamps) appear
+ * misaligned in the editor. fps comes from the doc's videoFormatFrameRate.
+ */
+export function secondsToFrameUnits(seconds: number, editRate: number, fps: number): number {
+  const frame = editRate / fps;
+  return Math.round((seconds * editRate) / frame) * frame;
+}
+
 export function unitsToSeconds(units: number, editRate: number): number {
   return units / editRate;
 }

@@ -10,7 +10,7 @@
  * source per track but each kept segment clones once per track.
  */
 import { clipSrc, tracks } from "./project.ts";
-import { secondsToUnits, unitsToSeconds } from "./time.ts";
+import { secondsToFrameUnits, unitsToSeconds } from "./time.ts";
 
 export interface KeepSeg {
   src: number;
@@ -72,6 +72,7 @@ export interface RebuildPlan {
 export function planRebuild(doc: any, segs: KeepSeg[]): RebuildPlan {
   if (!segs.length) throw new Error("No keep segments given.");
   const ed = doc.editRate;
+  const fps = doc.videoFormatFrameRate ?? 30;
   const ts = tracks(doc);
 
   // Map each source id → the timeline clips that reference it (a src can appear
@@ -101,8 +102,8 @@ export function planRebuild(doc: any, segs: KeepSeg[]): RebuildPlan {
   let posU = 0;
   const entries: PlanEntry[] = [];
   for (const s of segs) {
-    const durU = secondsToUnits(s.end - s.start, ed);
-    const startU = secondsToUnits(s.start, ed);
+    const durU = secondsToFrameUnits(s.end - s.start, ed, fps);
+    const startU = secondsToFrameUnits(s.start, ed, fps);
     for (const { trackIdx, clip } of templates[s.src]) {
       const clone = JSON.parse(JSON.stringify(clip));
       reId(clone);
