@@ -17,8 +17,9 @@ export function secondsToUnits(seconds: number, editRate: number): number {
  * misaligned in the editor. fps comes from the doc's videoFormatFrameRate.
  */
 export function secondsToFrameUnits(seconds: number, editRate: number, fps: number): number {
-  const frame = editRate / fps;
-  return Math.round((seconds * editRate) / frame) * frame;
+  // Round to whole frames first, then to whole units, so fractional frame
+  // rates (e.g. 29.97) still yield integer unit counts.
+  return Math.round((Math.round(seconds * fps) * editRate) / fps);
 }
 
 export function unitsToSeconds(units: number, editRate: number): number {

@@ -72,7 +72,8 @@ export interface RebuildPlan {
 export function planRebuild(doc: any, segs: KeepSeg[]): RebuildPlan {
   if (!segs.length) throw new Error("No keep segments given.");
   const ed = doc.editRate;
-  const fps = doc.videoFormatFrameRate ?? 30;
+  const fps = doc.videoFormatFrameRate;
+  if (!fps) throw new Error("Project has no videoFormatFrameRate; can't snap cuts to frames.");
   const ts = tracks(doc);
 
   // Map each source id → the timeline clips that reference it (a src can appear
@@ -102,8 +103,8 @@ export function planRebuild(doc: any, segs: KeepSeg[]): RebuildPlan {
   let posU = 0;
   const entries: PlanEntry[] = [];
   for (const s of segs) {
-    const durU = secondsToFrameUnits(s.end - s.start, ed, fps);
     const startU = secondsToFrameUnits(s.start, ed, fps);
+    const durU = secondsToFrameUnits(s.end, ed, fps) - startU;
     for (const { trackIdx, clip } of templates[s.src]) {
       const clone = JSON.parse(JSON.stringify(clip));
       reId(clone);
