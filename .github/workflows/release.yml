@@ -1,0 +1,66 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0). Required for manual runs."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: v
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun test
+
+      - name: Build binaries (cross-compiled)
+        run: |
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            bun build --compile --target=bun-$target \
+              --outfile dist/camkit-$target/camkit \
+              packages/cli/src/camkit.ts
+            tar -czf dist/camkit-$target.tar.gz -C dist/camkit-$target camkit
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          shasum -a 256 camkit-*.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          # Anchor release notes to the last published release, not the
+          # previous git tag, so a failed release run can't swallow commits.
+          PREV=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName -q '.[0].tagName' || true)
+          NOTES_ARGS=(--generate-notes)
+          if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+            NOTES_ARGS+=(--notes-start-tag "$PREV")
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            "${NOTES_ARGS[@]}" \
+            dist/camkit-*.tar.gz \
+            dist/checksums.txt
