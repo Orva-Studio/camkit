@@ -26,16 +26,19 @@ rewrites the timeline to keep only the good segments.
   project.tscproj while a document is open, so the edit cycle is
   `close (saves) → edit JSON → open (reloads)`. Throws on other platforms.
 - **@camkit/cli** — the `camkit` binary: info, clips, sources, rebuild,
-  silences, transcribe, status, close, open, docs. Rebuild always backs up to
-  `.bak` and refuses to run with a `~project.tscproj` lock or an existing
-  backup unless `--force`. Always `--dry-run` first.
+  export-audio, silences, transcribe, status, close, open, docs. Rebuild
+  always backs up to `.bak` and refuses to run with a `~project.tscproj` lock
+  or an existing backup unless `--force`. Always `--dry-run` first.
+  `export-audio` flat-mixes the timeline's audio to one file (m4a/wav/flac/…)
+  for cleanup in Audacity/Auphonic — pure ffmpeg, honours track mute and
+  per-clip gain (`--raw` to bypass).
 - **@camkit/mcp** — placeholder; will wrap core later.
 
 ## Prerequisites
 
 - **Bun** ≥ 1.x
-- **ffmpeg** on PATH — required by `camkit silences` and `camkit
-  transcribe` (`brew install ffmpeg`)
+- **ffmpeg** on PATH — required by `camkit export-audio`, `silences`, and
+  `transcribe` (`brew install ffmpeg`)
 - **A transcription engine** — required by `camkit transcribe` only; see
   *Transcription engines* below. Either `OPENAI_API_KEY` (cloud) or
   `whisper-cpp` (local, `brew install whisper-cpp`).
