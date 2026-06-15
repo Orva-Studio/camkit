@@ -8,7 +8,7 @@ always the final renderer — source media is never re-encoded.
 ## Prerequisites
 
 - **Bun** ≥ 1.x (runs the TypeScript bin directly, no build step)
-- **ffmpeg** on PATH — required by `silences` and `transcribe`
+- **ffmpeg** on PATH — required by `export-audio`, `silences`, `transcribe`
 - **A transcription engine** — required by `transcribe` only: either
   `OPENAI_API_KEY` in the environment, or `whisper-cpp` (`brew install
   whisper-cpp`) for local transcription
@@ -53,8 +53,10 @@ OPENAI_API_KEY are still runtime requirements for silences/transcribe.
 - `--help` / `-h` — global or per-command (`camkit rebuild --help`).
 - `--version` / `-v` — print the camkit version.
 
-Read commands (`info`, `clips`, `sources`, `status`, `docs`) never mutate
-anything. The only mutating command is `rebuild`.
+Read commands (`info`, `clips`, `sources`, `status`, `docs`) never mutate the
+project. `export-audio` is also non-mutating — it reads the timeline and
+writes a separate audio file, never touching the project or source media. The
+only command that rewrites `project.tscproj` is `rebuild`.
 
 ## Commands
 
@@ -96,6 +98,49 @@ Safety rules (enforced):
 **Recutting gotcha:** after a rebuild, the project is already cut and `.bak`
 holds the original. To recut, first `cp project.tscproj.bak project.tscproj`,
 then rebuild — otherwise you back up the already-cut file.
+
+### `camkit export-audio [--project P] [--out FILE] [--format m4a|wav|flac|mp3] [--raw]`
+Flat-mixes the **current timeline's** audio into a single file for cleanup in
+Audacity, Auphonic, etc. Reads timeline timing as-is, so run it after a
+`rebuild` to export the edited cut (or before, for the raw assembly). Pure
+ffmpeg — Camtasia is never involved, source media is never touched.
+
+How it works:
+
+- Collects audio-bearing clips only — a standalone `AMFile`, or the nested
+  `.audio` of a `UnifiedMedia`. Screen-only `ScreenVMFile` clips are skipped,
+  so a screen+camera take that appears on two tracks but shares one `.trec`
+  isn't counted twice.
+- Each clip is sliced from its source (`ffmpeg -ss/-t`), delayed to its
+  timeline position (`adelay`), and the segments are summed (`amix`,
+  `normalize=0`). Timeline gaps become silence.
+- The mix is padded (`apad`) and hard-trimmed (`-t`) to the project's exact
+  timeline duration, so per-segment seek/delay rounding can't drift the
+  output short.
+
+By default it honours the timeline's mix:
+
+- **Track mute / solo** — `timeline.trackAttributes[i].audioMuted` /
+  `.solo`. Muted tracks are dropped; if any track is soloed, only soloed
+  tracks are kept.
+- **Per-clip level** — `audio.attributes.gain × audio.parameters.volume` is
+  applied via the `volume` filter. Clips at gain 0 (intentionally silenced
+  takes — common) are dropped.
+- A **keyframed volume envelope** (automation fades) can't collapse to one
+  scalar, so those clips export at unity gain.
+
+Flags:
+
+- `--out FILE` — output path. Default `./<project>.<format>`. The extension
+  wins: `--out mix.wav` produces WAV regardless of `--format`.
+- `--format FMT` — container/codec when `--out` is omitted. Default `m4a`
+  (AAC); `wav` (PCM), `flac`, `mp3` also work — ffmpeg infers the codec from
+  the extension.
+- `--raw` — ignore mute/solo/gain entirely and export a dry unity-gain sum of
+  every audio clip. Use when you want the unprocessed source to clean from
+  scratch.
+
+Needs only `ffmpeg` on PATH; works on any platform (no Camtasia required).
 
 ### `camkit silences <input.trec> [--range a-b] [--db -35] [--min 0.4]`
 ffmpeg `silencedetect` on a recording's audio. Run on every kept range before
