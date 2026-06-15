@@ -1,8 +1,14 @@
 # camkit
 
-Programmatic Camtasia (Mac) editing toolkit. A Camtasia `.cmproj` bundle's
+**The missing CLI and MCP server for Camtasia.**
+
+Programmatic Camtasia editing toolkit. A Camtasia `.cmproj` bundle's
 timeline is plain JSON (`project.tscproj`); camkit reads and rewrites it
 directly — no ffmpeg re-encoding, Camtasia stays the final renderer.
+
+> **Platform:** the core timeline and media commands are cross-platform; the
+> Camtasia app-control commands (`status`, `open`, `close`, `docs`) drive the
+> macOS app via AppleScript and are macOS-only.
 
 Extracted from a working rough-cut workflow: record long takes → transcribe
 with word-level Whisper timestamps → pick the best takes → `camkit rebuild`
