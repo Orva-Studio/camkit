@@ -155,6 +155,8 @@ export function planAudioExport(doc: any, opts: { raw?: boolean } = {}): AudioSe
       if (!a) continue;
       const src = a.src ?? clipSrc(m);
       if (src == null) continue;
+      const file = srcMap[src];
+      if (file == null) throw new Error(`Timeline clip references src ${src} not in the source bin`);
       let gain = 1;
       if (!raw) {
         const v = a.parameters?.volume;
@@ -164,7 +166,7 @@ export function planAudioExport(doc: any, opts: { raw?: boolean } = {}): AudioSe
       }
       segs.push({
         src,
-        file: srcMap[src],
+        file,
         sourceStart: (a.mediaStart ?? m.mediaStart ?? 0) / ed,
         duration: (m.duration ?? 0) / ed,
         timelineStart: (m.start ?? 0) / ed,
