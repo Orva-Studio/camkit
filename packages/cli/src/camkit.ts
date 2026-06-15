@@ -14,6 +14,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   applyRebuild,
+  injectDynamicCaptions,
   filterSilences,
   listClips,
   listSources,
@@ -31,6 +32,7 @@ import {
 } from "@camkit/core";
 import { camtasiaDocPaths, camtasiaDocs, closeProject, openProject, projectStatus } from "@camkit/darwin";
 import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
+import { listPresets, resolvePreset } from "./presets.ts";
 import { version } from "../package.json";
 
 /** Load for read-only commands: --project, else the ./search.cmproj default,
@@ -121,6 +123,33 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "  --raw          ignore mute/solo/gain — dry unity sum of every clip",
     ],
   },
+  captions: {
+    usage:
+      "camkit captions [--project PATH] --from FILE.transcript.json (--preset NAME | --preset-file PATH) [--list-presets] [--src ID] [--dry-run] [--force]",
+    about: [
+      "Inject an animated Dynamic Caption track straight into the project, so",
+      "captions appear on the timeline with no manual SRT import. Uses camkit's",
+      "word-level transcript (better model) for the per-word highlight timing,",
+      "and a Camtasia style preset for the look.",
+      "",
+      "Two writes: the word stream goes on the SOURCE asset's audio track; a",
+      "styled Callout (the preset) is added on a new timeline track spanning the",
+      "project (drag/trim it in Camtasia afterwards).",
+      "",
+      "  --from FILE       a *.transcript.json from `camkit transcribe`",
+      "  --preset NAME     a preset by display name or id (see --list-presets)",
+      "  --preset-file P   use an effect.json directly (bypasses preset lookup)",
+      "  --list-presets    list available presets and exit",
+      "  --src ID          attach to this source id (default: first with audio)",
+      "  --dry-run         print what would change, write nothing",
+      "  --force           override a stale lock / overwrite an existing .bak",
+      "",
+      "Presets live in Camtasia's app-support dir, resolved on demand. Classic",
+      "(non-animated) captions aren't supported — they can't do the per-word",
+      "Shorts look. Same safety as rebuild: backs up to .bak, refuses to run",
+      "with the ~project.tscproj lock present (close the project first).",
+    ],
+  },
   silences: {
     usage: "camkit silences <input.trec> [--range a-b] [--db -35] [--min 0.4]",
     about: [
@@ -188,6 +217,7 @@ function printHelp(cmd?: string): void {
     sources: "list media-bin sources, placed or not",
     rebuild: "rewrite timeline to kept segments (rough cut)",
     "export-audio": "mix the timeline's audio to one file (m4a/wav/…)",
+    captions: "inject an animated Dynamic Caption track from a transcript",
     silences: "ffmpeg silencedetect on a recording",
     transcribe: "word-level Whisper transcript of a recording",
     status: "is this project open in Camtasia? (exit 2 if so)",
@@ -312,6 +342,70 @@ async function cmdExportAudio(argv: string[]) {
   await exportAudio({ segs, projectPath: path, out, durationSeconds });
 }
 
+function cmdCaptions(argv: string[]) {
+  if (has(argv, "--list-presets")) {
+    const presets = listPresets();
+    if (!presets.length) {
+      console.log("No dynamic-caption presets found. Open Camtasia once to populate them.");
+      return;
+    }
+    for (const p of presets) console.log(`  ${p.dir.padEnd(38)} ${p.name}`);
+    return;
+  }
+
+  const force = has(argv, "--force");
+  const dryRun = has(argv, "--dry-run");
+  const { path, doc } = loadProject(flag(argv, "--project"));
+
+  const fromFile = flag(argv, "--from");
+  if (!fromFile) throw new Error("captions needs --from FILE.transcript.json");
+  const transcript = JSON.parse(readFileSync(resolve(fromFile), "utf8"));
+  if (!Array.isArray(transcript.words)) {
+    throw new Error(`${fromFile} has no word-level "words" array (transcribe with whisper-1).`);
+  }
+
+  const presetFile = flag(argv, "--preset-file");
+  const presetName = flag(argv, "--preset");
+  if (!presetFile && !presetName) {
+    throw new Error("captions needs --preset NAME or --preset-file PATH (see --list-presets).");
+  }
+  const presetDef = presetFile
+    ? JSON.parse(readFileSync(resolve(presetFile), "utf8"))
+    : resolvePreset(presetName!).def;
+  const presetLabel = presetFile ?? presetName;
+
+  const srcId = flag(argv, "--src") != null ? Number(flag(argv, "--src")) : undefined;
+
+  if (dryRun) {
+    const words = transcript.words.filter((w: any) => (w.word ?? "").trim().length > 0).length;
+    console.log(`captions plan:`);
+    console.log(`  source:   ${srcId != null ? `src ${srcId}` : "first source with audio"}`);
+    console.log(`  preset:   ${presetLabel}`);
+    console.log(`  words:    ${words}`);
+    console.log(`  adds:     1 timeline track with a Dynamic Caption Callout`);
+    console.log("\n--dry-run: no files written.");
+    return;
+  }
+
+  // Same safety as rebuild: never edit under Camtasia's lock; never clobber the backup.
+  const lock = join(dirname(path), "~project.tscproj");
+  if (existsSync(lock) && !force) {
+    throw new Error(`Lock file ${lock} present (Camtasia may be open). Close it, or pass --force if stale.`);
+  }
+  const bak = path + ".bak";
+  if (existsSync(bak) && !force) {
+    throw new Error(`Backup ${bak} already exists; refusing to clobber it. Pass --force to overwrite.`);
+  }
+  copyFileSync(path, bak);
+
+  const result = injectDynamicCaptions(doc, { transcript, presetDef, srcId });
+  writeFileSync(path, JSON.stringify(doc, null, 2));
+  console.log(`captions: ${result.wordCount} words on src ${result.srcId}, preset "${presetLabel}"`);
+  console.log(`✓ backed up → ${bak}`);
+  console.log(`✓ wrote ${path}  (new track ${result.trackIndex}, callout id ${result.calloutId})`);
+  console.log(`  reopen in Camtasia to see the caption track.`);
+}
+
 async function cmdSilences(argv: string[]) {
   const flagVals = new Set([flag(argv, "--range"), flag(argv, "--db"), flag(argv, "--min")]);
   const input = argv.find((a) => !a.startsWith("--") && !flagVals.has(a));
@@ -393,6 +487,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   sources: cmdSources,
   rebuild: cmdRebuild,
   "export-audio": cmdExportAudio,
+  captions: cmdCaptions,
   silences: cmdSilences,
   transcribe: cmdTranscribe,
   status: cmdStatus,

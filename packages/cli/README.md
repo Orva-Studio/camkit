@@ -142,6 +142,47 @@ Flags:
 
 Needs only `ffmpeg` on PATH; works on any platform (no Camtasia required).
 
+### `camkit captions [--project P] --from FILE.transcript.json (--preset NAME | --preset-file PATH) [--list-presets] [--src ID] [--dry-run] [--force]`
+Injects an animated **Dynamic Caption** track straight into the project, so
+captions appear on the timeline with no manual SRT import. Uses camkit's
+word-level transcript for the per-word highlight timing and a Camtasia style
+preset for the look.
+
+How it works (two writes, matching how Camtasia itself stores Dynamic Captions):
+
+- The **word stream** goes on the **source asset**, not the timeline: each word
+  becomes a keyframe (source-relative time in project editRate units) on the
+  source's audio `sourceTrack`, with `transcriptionSet: true`.
+- A styled **`Callout`** (the preset, copied verbatim) is added on a new
+  timeline track spanning the project. It carries no link to the source —
+  Camtasia pairs the two by scene. Drag or trim it in Camtasia afterwards.
+
+Presets are **not** bundled. They're read on demand from Camtasia's app-support
+dir (`~/Library/Application Support/TechSmith/Camtasia/DynamicCaptions`), where
+each preset's `effect.json` *is* the Callout style block. Custom presets you
+save in Camtasia show up too.
+
+Flags:
+
+- `--from FILE` — a `*.transcript.json` from `camkit transcribe` (needs the
+  word-level `words` array, i.e. a `whisper-1`/local transcript).
+- `--preset NAME` — a preset by display name (e.g. `"Bebas 3 Line Word Red"`),
+  directory id, or preset id. Names are matched loosely; ambiguous names error
+  with the unique directory ids to pick from.
+- `--preset-file PATH` — use an `effect.json` directly, bypassing the lookup.
+- `--list-presets` — print available presets (dir id + display name) and exit.
+- `--src ID` — attach to this source id (default: the first source that has an
+  audio track).
+- `--dry-run` — print what would change, write nothing.
+- `--force` — override a stale `~project.tscproj` lock / overwrite an existing
+  `.bak`.
+
+Same safety as `rebuild`: backs up to `.bak` and refuses to run while the
+`~project.tscproj` lock is present (close the project first; then reopen to see
+the track). Classic (non-animated) captions aren't supported — they can't do
+the per-word Shorts look; promote a Dynamic track's styling further in
+Camtasia's UI if you want.
+
 ### `camkit silences <input.trec> [--range a-b] [--db -35] [--min 0.4]`
 ffmpeg `silencedetect` on a recording's audio. Run on every kept range before
 finalizing a cut: Whisper folds pauses into a stretched neighboring word's
