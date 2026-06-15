@@ -268,6 +268,9 @@ export async function exportAudio(opts: ExportAudioOpts): Promise<void> {
     "-y", ...inputs,
     "-filter_complex", filter,
     "-map", "[out]",
+    // Force stereo: mono sources (e.g. a mic .trec) become centred dual-mono,
+    // matching Camtasia's exporter; genuine stereo sources pass through.
+    "-ac", "2",
     "-t", opts.durationSeconds.toFixed(6),
     opts.out,
   ]);
