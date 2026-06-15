@@ -22,6 +22,7 @@ import {
   parseKeepJson,
   parseRange,
   parseSilences,
+  planAudioExport,
   planRebuild,
   projectInfo,
   bundleName,
@@ -29,7 +30,7 @@ import {
   type KeepSeg,
 } from "@camkit/core";
 import { camtasiaDocPaths, camtasiaDocs, closeProject, openProject, projectStatus } from "@camkit/darwin";
-import { runSilencedetect, transcribeRecording } from "./media.ts";
+import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
 import { version } from "../package.json";
 
 /** Load for read-only commands: --project, else the ./search.cmproj default,
@@ -102,6 +103,24 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "project) — otherwise you back up the already-cut file.",
     ],
   },
+  "export-audio": {
+    usage: "camkit export-audio [--project PATH] [--out FILE] [--format m4a|wav|flac|mp3] [--raw]",
+    about: [
+      "Flat-mix the CURRENT timeline's audio into a single file for cleanup in",
+      "Audacity, Auphonic, etc. Reads timeline timing as-is (run after rebuild",
+      "to export the edited cut). Each audio clip is sliced from its source and",
+      "summed at its timeline position; screen-only tracks are skipped so a",
+      "screen+camera take isn't doubled. Never touches source media or Camtasia.",
+      "",
+      "Honours the timeline's mix by default: muted/soloed tracks and per-clip",
+      "gain+volume are applied (clips at gain 0 are dropped). Keyframed volume",
+      "fades can't be folded into one number, so they export at unity.",
+      "",
+      "  --out FILE     output path (default ./<project>.m4a); extension wins",
+      "  --format FMT   container/codec when --out is omitted (default m4a)",
+      "  --raw          ignore mute/solo/gain — dry unity sum of every clip",
+    ],
+  },
   silences: {
     usage: "camkit silences <input.trec> [--range a-b] [--db -35] [--min 0.4]",
     about: [
@@ -168,6 +187,7 @@ function printHelp(cmd?: string): void {
     clips: "list timeline clips + recordings on the timeline",
     sources: "list media-bin sources, placed or not",
     rebuild: "rewrite timeline to kept segments (rough cut)",
+    "export-audio": "mix the timeline's audio to one file (m4a/wav/…)",
     silences: "ffmpeg silencedetect on a recording",
     transcribe: "word-level Whisper transcript of a recording",
     status: "is this project open in Camtasia? (exit 2 if so)",
@@ -282,6 +302,16 @@ function cmdRebuild(argv: string[]) {
   console.log(`✓ wrote ${path}`);
 }
 
+async function cmdExportAudio(argv: string[]) {
+  const { path, doc } = loadProjectForRead(argv);
+  const segs = planAudioExport(doc, { raw: has(argv, "--raw") });
+  const fmt = (flag(argv, "--format") ?? "m4a").replace(/^\./, "");
+  const base = bundleName(path).replace(/\.(cmproj|tscproj)$/, "");
+  const out = flag(argv, "--out") ? resolve(flag(argv, "--out")!) : resolve(`${base}.${fmt}`);
+  const durationSeconds = projectInfo(path, doc).durationSeconds;
+  await exportAudio({ segs, projectPath: path, out, durationSeconds });
+}
+
 async function cmdSilences(argv: string[]) {
   const flagVals = new Set([flag(argv, "--range"), flag(argv, "--db"), flag(argv, "--min")]);
   const input = argv.find((a) => !a.startsWith("--") && !flagVals.has(a));
@@ -362,6 +392,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   clips: cmdClips,
   sources: cmdSources,
   rebuild: cmdRebuild,
+  "export-audio": cmdExportAudio,
   silences: cmdSilences,
   transcribe: cmdTranscribe,
   status: cmdStatus,
