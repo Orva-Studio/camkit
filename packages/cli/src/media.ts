@@ -109,7 +109,16 @@ async function callWhisperCpp(audioPath: string, modelPath: string): Promise<any
   const jsonPath = `${outBase}.json`;
   const data = JSON.parse(await readFile(jsonPath, "utf8"));
   await unlink(jsonPath).catch(() => {});
+  return shapeWhisperCpp(data);
+}
 
+/**
+ * Shape whisper.cpp's `--output-json-full` payload into the same verbose_json
+ * contract as the OpenAI path. Word times come from the per-token offsets;
+ * tokens beginning a new word carry a leading space, so they bound each word.
+ * Offsets are in milliseconds. Pure — the I/O lives in `callWhisperCpp`.
+ */
+export function shapeWhisperCpp(data: any): any {
   const segments: any[] = [];
   const words: any[] = [];
   let id = 0;
