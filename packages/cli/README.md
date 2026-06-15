@@ -9,7 +9,9 @@ always the final renderer — source media is never re-encoded.
 
 - **Bun** ≥ 1.x (runs the TypeScript bin directly, no build step)
 - **ffmpeg** on PATH — required by `silences` and `transcribe`
-- **OPENAI_API_KEY** in the environment — required by `transcribe` only
+- **A transcription engine** — required by `transcribe` only: either
+  `OPENAI_API_KEY` in the environment, or `whisper-cpp` (`brew install
+  whisper-cpp`) for local transcription
 - **macOS + Camtasia** — required by `status`, `close`, `open`, `docs` only
   (everything else is cross-platform)
 
@@ -101,12 +103,25 @@ finalizing a cut: Whisper folds pauses into a stretched neighboring word's
 timestamps, so transcripts alone miss dead air — and apparent gaps in word
 times can hide a clean retake that silencedetect shows as continuous speech.
 
-### `camkit transcribe <input> [--out FILE] [--model whisper-1] [--keep-audio]`
-Word-level transcription via the OpenAI API. Extracts audio with ffmpeg
-(`.trec` is a QuickTime container; audio is readable, the tscc2 video stream
-is not), downsamples to a small mono mp3 (stays under the 25 MB upload
-limit), never touches source media. Model must be `whisper-1` — the
-gpt-4o-transcribe models don't return word timestamps. Output:
+### `camkit transcribe <input> [--engine openai|whisper-cpp] [--out FILE] [--model whisper-1] [--srt [FILE]] [--keep-audio]`
+Word-level transcription. Extracts audio with ffmpeg (`.trec` is a QuickTime
+container; audio is readable, the tscc2 video stream is not), never touches
+source media.
+
+The engine is resolved by precedence — `--engine`, then `OPENAI_API_KEY`
+(OpenAI `whisper-1`, best quality; downsamples to mono mp3 under the 25 MB
+upload limit), then local `whisper.cpp` if `whisper-cli` is on PATH
+(`brew install whisper-cpp`; decodes a mono 16 kHz wav). camkit never
+auto-installs. The OpenAI model must be `whisper-1` — the gpt-4o-transcribe
+models don't return word timestamps.
+
+The local engine reuses the ggml model Camtasia downloads for its built-in
+captions by default; override with `CAMKIT_WHISPER_MODEL` (path to a larger
+`ggml-*.bin`) or `CAMKIT_WHISPER_BIN`. The tiny model's word timestamps are
+coarser, so cross-check kept ranges with `camkit silences`.
+
+`--srt` also writes SRT captions (segment-level) next to the output, or to an
+explicit path, for Camtasia import (File ▸ Import ▸ Captions). Output:
 
 ```json
 { "source": "...", "model": "whisper-1", "duration": 123.4, "text": "...",

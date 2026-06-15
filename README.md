@@ -30,10 +30,42 @@ rewrites the timeline to keep only the good segments.
 - **Bun** ≥ 1.x
 - **ffmpeg** on PATH — required by `camkit silences` and `camkit
   transcribe` (`brew install ffmpeg`)
-- **OPENAI_API_KEY** — required by `camkit transcribe` only (whisper-1, the
-  only OpenAI model returning word timestamps)
+- **A transcription engine** — required by `camkit transcribe` only; see
+  *Transcription engines* below. Either `OPENAI_API_KEY` (cloud) or
+  `whisper-cpp` (local, `brew install whisper-cpp`).
 - **macOS + Camtasia** — required by `status`/`close`/`open`/`docs` only;
   everything else is cross-platform
+
+## Transcription engines
+
+`camkit transcribe` resolves an engine by precedence (highest wins): an
+explicit `--engine openai|whisper-cpp` flag, then environment, then the
+`auto` default. `auto` picks:
+
+1. **`OPENAI_API_KEY` set → OpenAI `whisper-1`** (best quality). Note: this is
+   pinned to `whisper-1`, not a "newer" model — the `gpt-4o-transcribe` models
+   don't return the word-level timestamps the rebuild step needs.
+2. **Else `whisper-cli` on PATH → local whisper.cpp.** By default it reuses the
+   `ggml` model Camtasia downloads to
+   `Camtasia.app/Contents/Resources/models/speechToText/` (tiny/quantized —
+   fast, lower fidelity). Override with `CAMKIT_WHISPER_MODEL` (path to a
+   larger `ggml-*.bin`) or `CAMKIT_WHISPER_BIN`.
+3. **Neither → an error** telling you to set `OPENAI_API_KEY` or run
+   `brew install whisper-cpp`. camkit never auto-installs (no silent `brew`).
+
+camkit reuses Camtasia's *model file* but not its bundled `libwhisper.dylib`
+(private, code-signed, undocumented ABI) — you bring your own `whisper-cli`
+runner. The tiny local model has coarser word timestamps, so cross-checking
+with `camkit silences` matters even more on the local path.
+
+## Captions in the Camtasia UI
+
+To get higher-quality captions than Camtasia's built-in tiny model: transcribe
+with camkit (OpenAI or a larger local model) and bring the result into
+Camtasia via SRT import (File ▸ Import ▸ Captions). Do **not** swap Camtasia's
+bundled model file — it's redownloaded on update and unsupported. A future
+option is writing the caption track directly into `project.tscproj` via the
+same `close → edit → open` cycle as rebuild.
 
 ## Use
 

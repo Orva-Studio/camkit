@@ -112,12 +112,18 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
     ],
   },
   transcribe: {
-    usage: "camkit transcribe <input> [--out FILE] [--model whisper-1] [--keep-audio]",
+    usage:
+      "camkit transcribe <input> [--engine openai|whisper-cpp] [--out FILE] [--model whisper-1] [--srt [FILE]] [--keep-audio]",
     about: [
-      "Word-level transcription via the OpenAI API (needs OPENAI_API_KEY and",
-      "ffmpeg). Extracts + downsamples audio, never touches source media.",
-      "Model must be whisper-1 — the gpt-4o-transcribe models don't return",
-      "word timestamps. Writes {source, model, duration, text, words, segments}.",
+      "Word-level transcription (needs ffmpeg). Engine by precedence: --engine,",
+      "then OPENAI_API_KEY (OpenAI whisper-1, best quality), then local",
+      "whisper.cpp if `whisper-cli` is on PATH (brew install whisper-cpp). The",
+      "local engine reuses Camtasia's tiny model by default — override with",
+      "CAMKIT_WHISPER_MODEL / CAMKIT_WHISPER_BIN. OpenAI model must be whisper-1;",
+      "the gpt-4o-transcribe models don't return word timestamps. Extracts +",
+      "downsamples audio, never touches source media. Writes {source, model,",
+      "duration, text, words, segments}; --srt also emits SRT captions for",
+      "Camtasia import (File ▸ Import ▸ Captions).",
     ],
   },
   status: {
@@ -294,14 +300,24 @@ async function cmdSilences(argv: string[]) {
 }
 
 async function cmdTranscribe(argv: string[]) {
-  const positional = argv.filter((a, i) => !a.startsWith("--") && argv[i - 1] !== "--out" && argv[i - 1] !== "--model");
+  const valued = ["--out", "--model", "--engine", "--srt"];
+  const positional = argv.filter((a, i) => !a.startsWith("--") && !valued.includes(argv[i - 1]));
   if (positional.length !== 1) {
-    throw new Error("Usage: camkit transcribe <input> [--out file.json] [--model whisper-1] [--keep-audio]");
+    throw new Error(
+      "Usage: camkit transcribe <input> [--engine openai|whisper-cpp] [--out file.json] " +
+        "[--model whisper-1] [--srt [file.srt]] [--keep-audio]",
+    );
   }
+  // --srt is optional-valued: bare flag derives the path, or takes an explicit one.
+  const srtIdx = argv.indexOf("--srt");
+  const srtNext = srtIdx >= 0 ? argv[srtIdx + 1] : undefined;
+  const srt = srtIdx < 0 ? undefined : srtNext && !srtNext.startsWith("--") ? srtNext : true;
   await transcribeRecording({
     input: resolve(positional[0]),
     out: flag(argv, "--out"),
     model: flag(argv, "--model") ?? "whisper-1",
+    engine: flag(argv, "--engine"),
+    srt,
     keepAudio: has(argv, "--keep-audio"),
   });
 }
