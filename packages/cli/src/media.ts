@@ -9,8 +9,9 @@
 import { spawn } from "node:child_process";
 import { readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, extname, join, resolve } from "node:path";
-import { shapeTranscript, toSrt } from "@camkit/core";
+import { existsSync } from "node:fs";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { shapeTranscript, toSrt, type AudioSeg } from "@camkit/core";
 
 const API_URL = "https://api.openai.com/v1/audio/transcriptions";
 const WHISPER_BIN = process.env.CAMKIT_WHISPER_BIN ?? "whisper-cli";
@@ -204,4 +205,71 @@ export async function transcribeRecording(opts: TranscribeOpts): Promise<void> {
   } finally {
     if (!opts.keepAudio) await unlink(audioPath).catch(() => {});
   }
+}
+
+export interface ExportAudioOpts {
+  segs: AudioSeg[];
+  projectPath: string;
+  out: string;
+  /** Total timeline length (s); the mix is padded/trimmed to exactly this. */
+  durationSeconds: number;
+}
+
+/** Resolve a source-bin path against the project dir, falling back to media/. */
+function resolveSource(file: string, projectDir: string): string {
+  const direct = resolve(projectDir, file);
+  if (existsSync(direct)) return direct;
+  const inMedia = resolve(projectDir, "media", file);
+  if (existsSync(inMedia)) return inMedia;
+  throw new Error(`Source media not found: ${file} (looked in ${projectDir} and media/)`);
+}
+
+/**
+ * Flat-mix the timeline's audio segments into one file with ffmpeg. Each
+ * segment is sliced from its source (-ss/-t), delayed to its timeline position
+ * (adelay), and summed (amix). Codec/container follow the output extension, so
+ * `.m4a` → AAC, `.wav` → PCM, `.flac`, `.mp3`, etc. Never touches source media.
+ */
+export async function exportAudio(opts: ExportAudioOpts): Promise<void> {
+  if (!opts.segs.length) throw new Error("No audio clips on the timeline to export.");
+  const projectDir = dirname(opts.projectPath);
+
+  const inputs: string[] = [];
+  const filters: string[] = [];
+  const labels: string[] = [];
+  opts.segs.forEach((s, i) => {
+    const file = resolveSource(s.file, projectDir);
+    inputs.push("-ss", s.sourceStart.toFixed(6), "-t", s.duration.toFixed(6), "-i", file);
+    const ms = Math.round(s.timelineStart * 1000);
+    const vol = s.gain !== 1 ? `volume=${s.gain.toFixed(6)},` : "";
+    filters.push(`[${i}:a]${vol}adelay=${ms}:all=1[a${i}]`);
+    labels.push(`[a${i}]`);
+  });
+
+  let filter: string;
+  let mixed: string;
+  if (opts.segs.length === 1) {
+    filter = filters[0];
+    mixed = "[a0]";
+  } else {
+    filter =
+      filters.join(";") +
+      ";" +
+      labels.join("") +
+      `amix=inputs=${opts.segs.length}:normalize=0:dropout_transition=0[mix]`;
+    mixed = "[mix]";
+  }
+  // Per-segment seek/delay rounding loses a few samples each; pad then hard-trim
+  // so the mix is exactly the timeline length, never drifting short.
+  filter += `;${mixed}apad[out]`;
+
+  process.stderr.write(`→ mixing ${opts.segs.length} audio segment(s) → ${basename(opts.out)}…\n`);
+  await run("ffmpeg", [
+    "-y", ...inputs,
+    "-filter_complex", filter,
+    "-map", "[out]",
+    "-t", opts.durationSeconds.toFixed(6),
+    opts.out,
+  ]);
+  process.stderr.write(`✓ wrote ${opts.out}\n`);
 }

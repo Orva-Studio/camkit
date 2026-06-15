@@ -112,6 +112,69 @@ export function listClips(doc: any): ClipRow[] {
   return rows;
 }
 
+export interface AudioSeg {
+  src: number;
+  file: string; // raw src path from the source bin (resolve against project dir)
+  sourceStart: number; // seconds into the source file
+  duration: number; // seconds
+  timelineStart: number; // seconds on the timeline
+  gain: number; // effective linear gain (clip gain × scalar volume; 1 in raw mode)
+}
+
+/**
+ * Ordered audio segments for a flat mixdown of the current timeline. Only
+ * audio-bearing clips contribute: a standalone AMFile, or the nested .audio of
+ * a UnifiedMedia. ScreenVMFile (screen capture, no audio) is skipped, so a
+ * screen+camera recording that appears on two tracks isn't counted twice even
+ * though both clips point at the same .trec. Timing is read straight off the
+ * timeline, so this reflects whatever the project currently is (post-rebuild).
+ *
+ * By default the timeline's mixing decisions are honoured: muted tracks (and,
+ * when any track is soloed, every non-soloed track) are dropped, and each
+ * clip's gain (audio.attributes.gain) times its scalar volume
+ * (audio.parameters.volume) is folded into `gain` — clips at gain 0 are
+ * dropped. A keyframed volume *envelope* (automation fades) can't be expressed
+ * as one scalar, so it's left at unity and noted via `hasVolumeEnvelope`.
+ * Pass { raw: true } to ignore all of that and export every clip dry at unity.
+ */
+export function planAudioExport(doc: any, opts: { raw?: boolean } = {}): AudioSeg[] {
+  const raw = opts.raw ?? false;
+  const ed = doc.editRate;
+  const srcMap: Record<number, string> = {};
+  for (const s of doc.sourceBin) srcMap[s.id] = s.src;
+
+  const trackAttrs: any[] = doc.timeline?.trackAttributes ?? [];
+  const soloActive = !raw && trackAttrs.some((a) => a?.solo);
+
+  const segs: AudioSeg[] = [];
+  for (const t of tracks(doc)) {
+    const attr = trackAttrs[t.trackIndex];
+    if (!raw && (attr?.audioMuted || (soloActive && !attr?.solo))) continue;
+    for (const m of t.medias ?? []) {
+      const a = m._type === "AMFile" ? m : m.audio;
+      if (!a) continue;
+      const src = a.src ?? clipSrc(m);
+      if (src == null) continue;
+      let gain = 1;
+      if (!raw) {
+        const v = a.parameters?.volume;
+        const vol = typeof v === "number" ? v : 1; // keyframed envelope → left at unity
+        gain = (a.attributes?.gain ?? 1) * vol;
+        if (gain === 0) continue; // clip muted on the timeline
+      }
+      segs.push({
+        src,
+        file: srcMap[src],
+        sourceStart: (a.mediaStart ?? m.mediaStart ?? 0) / ed,
+        duration: (m.duration ?? 0) / ed,
+        timelineStart: (m.start ?? 0) / ed,
+        gain,
+      });
+    }
+  }
+  return segs.sort((x, y) => x.timelineStart - y.timelineStart);
+}
+
 export interface SourceRow {
   id: number;
   src: string;
