@@ -2,7 +2,9 @@
   "name": "@camkit/cli",
   "version": "0.1.0",
   "type": "module",
-  "bin": { "camkit": "./src/camkit.ts" },
+  "bin": {
+    "camkit": "./src/camkit.ts"
+  },
   "scripts": {
     "build": "bun build --compile --outfile dist/camkit ./src/camkit.ts"
   },
