@@ -57,6 +57,26 @@ before opening a PR — both must pass.
 4. Open a PR describing what changed and why. Note any manual verification
    done against a real `.cmproj` if the change touches rebuild.
 
+## Releases
+
+camkit follows [semver](https://semver.org). Pre-1.0 the rules are:
+
+- **New features bump the minor** (`0.1.0` → `0.2.0`).
+- **Bug fixes bump the patch** (`0.1.0` → `0.1.1`).
+
+To cut a release, from a clean `main`:
+
+```sh
+bun run release 0.2.0
+```
+
+This bumps the root and every workspace `package.json` in lockstep, commits
+`chore(release): vX.Y.Z`, tags it, and pushes `main` + the tag. The pushed tag
+triggers `.github/workflows/release.yml`, which cross-compiles the binaries,
+generates checksums, and publishes a GitHub Release with `install.sh` attached.
+The script guards against running off `main`, a dirty tree, a non-fast-forward
+pull, or a duplicate tag.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the
