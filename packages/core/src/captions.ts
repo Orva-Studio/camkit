@@ -30,16 +30,37 @@ export interface CaptionKeyframe {
   duration: number;
 }
 
+/** How to clean caption word text. `false`/undefined leaves words verbatim. */
+export interface CleanOptions {
+  /** Drop punctuation (.,!?;: quotes …) from each word. */
+  stripPunctuation?: boolean;
+  /** Also drop apostrophes, so contractions collapse (I'm → Im). Implies stripPunctuation. */
+  stripApostrophes?: boolean;
+}
+
+/**
+ * Clean a single caption word per `opts`. Keeps internal apostrophes by default
+ * (so contractions survive) unless `stripApostrophes` is set. The %GAP silence
+ * marker and any tokens with no alphanumerics are left untouched.
+ */
+export function cleanWord(word: string, opts: CleanOptions = {}): string {
+  if (!opts.stripPunctuation && !opts.stripApostrophes) return word;
+  if (word === "%GAP" || !/[A-Za-z0-9]/.test(word)) return word;
+  if (opts.stripApostrophes) return word.replace(/[^\w\s]/g, "");
+  // keep apostrophes inside words, but drop standalone/edge ones
+  return word.replace(/[^\w\s']/g, "").replace(/^'+|'+$/g, "");
+}
+
 /**
  * One keyframe per word, at the word's SOURCE-relative start in editRate units.
  * Observed projects set time === endTime and duration 0 (Camtasia derives each
  * word's highlight window from the gap to the next keyframe).
  */
-export function transcriptionKeyframes(transcript: Transcript, editRate: number): CaptionKeyframe[] {
+export function transcriptionKeyframes(transcript: Transcript, editRate: number, clean: CleanOptions = {}): CaptionKeyframe[] {
   return transcript.words
     .map((w) => {
       const t = secondsToUnits(w.start, editRate);
-      return { endTime: t, time: t, value: w.word.trim(), duration: 0 };
+      return { endTime: t, time: t, value: cleanWord(w.word.trim(), clean), duration: 0 };
     })
     .filter((k) => k.value.length > 0);
 }
@@ -89,7 +110,7 @@ export interface InjectResult {
  * The Callout spans the whole project by default; the user can trim/move it in
  * Camtasia. Throws if the chosen source has no audio sourceTrack to attach to.
  */
-export function injectDynamicCaptions(doc: any, opts: { transcript: Transcript; presetDef: any; srcId?: number }): InjectResult {
+export function injectDynamicCaptions(doc: any, opts: { transcript: Transcript; presetDef: any; srcId?: number; clean?: CleanOptions }): InjectResult {
   const editRate = doc.editRate;
   const bin: any[] = doc.sourceBin ?? [];
 
@@ -107,7 +128,7 @@ export function injectDynamicCaptions(doc: any, opts: { transcript: Transcript; 
     throw new Error(`No audio sourceTrack on ${where} to attach captions to.`);
   }
 
-  const keyframes = transcriptionKeyframes(opts.transcript, editRate);
+  const keyframes = transcriptionKeyframes(opts.transcript, editRate, opts.clean ?? {});
   if (!keyframes.length) throw new Error("Transcript has no words to caption.");
 
   target.track.transcriptionSet = true;
