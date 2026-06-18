@@ -59,8 +59,10 @@ jobs:
           if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
             NOTES_ARGS+=(--notes-start-tag "$PREV")
           fi
+          cp scripts/install.sh dist/install.sh
           gh release create "$TAG" \
             --title "$TAG" \
             "${NOTES_ARGS[@]}" \
             dist/camkit-*.tar.gz \
-            dist/checksums.txt
+            dist/checksums.txt \
+            dist/install.sh
