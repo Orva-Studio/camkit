@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { injectDynamicCaptions, transcriptionKeyframes } from "../src/captions.ts";
+import { cleanWord, injectDynamicCaptions, transcriptionKeyframes } from "../src/captions.ts";
 import type { Transcript } from "../src/transcript.ts";
 
 const ED = 705600000;
@@ -38,6 +38,42 @@ test("transcriptionKeyframes: one per word, source-relative editRate units, time
     { endTime: 35280000, time: 35280000, value: "So,", duration: 0 },
     { endTime: 204624000, time: 204624000, value: "hello", duration: 0 },
   ]);
+});
+
+describe("cleanWord", () => {
+  test("no options leaves words verbatim", () => {
+    expect(cleanWord("data.")).toBe("data.");
+    expect(cleanWord("I'm", {})).toBe("I'm");
+  });
+
+  test("stripPunctuation drops .,!?;:\" but keeps contractions", () => {
+    const o = { stripPunctuation: true };
+    expect(cleanWord("data.", o)).toBe("data");
+    expect(cleanWord("JavaScript,", o)).toBe("JavaScript");
+    expect(cleanWord("button?", o)).toBe("button");
+    expect(cleanWord("I'm", o)).toBe("I'm");
+    expect(cleanWord("'quoted'", o)).toBe("quoted");
+  });
+
+  test("stripApostrophes collapses contractions too", () => {
+    const o = { stripPunctuation: true, stripApostrophes: true };
+    expect(cleanWord("I'm", o)).toBe("Im");
+    expect(cleanWord("data.", o)).toBe("data");
+  });
+
+  test("leaves the %GAP marker and punctuation-only tokens untouched", () => {
+    const o = { stripPunctuation: true };
+    expect(cleanWord("%GAP", o)).toBe("%GAP");
+    expect(cleanWord("--", o)).toBe("--");
+  });
+});
+
+test("transcriptionKeyframes strips punctuation when asked", () => {
+  const kf = transcriptionKeyframes(transcript([
+    { word: "data.", start: 0, end: 0.1 },
+    { word: "I'm", start: 0.1, end: 0.2 },
+  ]), ED, { stripPunctuation: true });
+  expect(kf.map((k) => k.value)).toEqual(["data", "I'm"]);
 });
 
 test("transcriptionKeyframes drops blank words", () => {

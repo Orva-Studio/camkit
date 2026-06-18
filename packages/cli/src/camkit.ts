@@ -125,7 +125,7 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
   },
   captions: {
     usage:
-      "camkit captions [--project PATH] --from FILE.transcript.json (--preset NAME | --preset-file PATH) [--list-presets] [--src ID] [--dry-run] [--force]",
+      "camkit captions [--project PATH] --from FILE.transcript.json (--preset NAME | --preset-file PATH) [--list-presets] [--src ID] [--strip-punctuation] [--strip-apostrophes] [--dry-run] [--force]",
     about: [
       "Inject an animated Dynamic Caption track straight into the project, so",
       "captions appear on the timeline with no manual SRT import. Uses camkit's",
@@ -141,6 +141,8 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "  --preset-file P   use an effect.json directly (bypasses preset lookup)",
       "  --list-presets    list available presets and exit",
       "  --src ID          attach to this source id (default: first with audio)",
+      "  --strip-punctuation  drop .,!?;:\" from caption words (keeps contractions)",
+      "  --strip-apostrophes  also drop apostrophes (I'm → Im); implies the above",
       "  --dry-run         print what would change, write nothing",
       "  --force           override a stale lock / overwrite an existing .bak",
       "",
@@ -375,6 +377,8 @@ function cmdCaptions(argv: string[]) {
   const presetLabel = presetFile ?? presetName;
 
   const srcId = flag(argv, "--src") != null ? Number(flag(argv, "--src")) : undefined;
+  const stripApostrophes = has(argv, "--strip-apostrophes");
+  const clean = { stripPunctuation: has(argv, "--strip-punctuation") || stripApostrophes, stripApostrophes };
 
   if (dryRun) {
     const words = transcript.words.filter((w: any) => (w.word ?? "").trim().length > 0).length;
@@ -382,6 +386,9 @@ function cmdCaptions(argv: string[]) {
     console.log(`  source:   ${srcId != null ? `src ${srcId}` : "first source with audio"}`);
     console.log(`  preset:   ${presetLabel}`);
     console.log(`  words:    ${words}`);
+    if (clean.stripPunctuation) {
+      console.log(`  clean:    strip punctuation${clean.stripApostrophes ? " (incl. apostrophes)" : " (keep contractions)"}`);
+    }
     console.log(`  adds:     1 timeline track with a Dynamic Caption Callout`);
     console.log("\n--dry-run: no files written.");
     return;
@@ -398,7 +405,7 @@ function cmdCaptions(argv: string[]) {
   }
   copyFileSync(path, bak);
 
-  const result = injectDynamicCaptions(doc, { transcript, presetDef, srcId });
+  const result = injectDynamicCaptions(doc, { transcript, presetDef, srcId, clean });
   writeFileSync(path, JSON.stringify(doc, null, 2));
   console.log(`captions: ${result.wordCount} words on src ${result.srcId}, preset "${presetLabel}"`);
   console.log(`✓ backed up → ${bak}`);
