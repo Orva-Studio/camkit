@@ -19,9 +19,13 @@ Turn raw long-take recordings on a Camtasia timeline into a tight rough cut, usi
 ### 1. Find the open project
 ```sh
 camkit status      # confirms Camtasia is running + which doc is open
-camkit docs        # the open .cmproj name
+camkit docs        # open .cmproj names + full paths
 ```
-Resolve its full path (e.g. `find ~ -maxdepth 5 -name "<doc>.cmproj"`). Use it as `--project` for every command, or rely on the read-command fallback to the open project. Keep the path in a shell var.
+`camkit docs` prints `<name>\t<full path>` per open project. Capture the path for the project you want to cut:
+```sh
+P=$(camkit docs | grep '<doc-name>' | cut -f2)
+```
+Use it as `--project` for every command, or rely on the read-command fallback to the open project. Keep the path in a shell var.
 
 ### 2. Inspect the timeline
 ```sh
@@ -32,15 +36,20 @@ camkit info    --project "$P"
 Note each on-timeline `src=N` and its `.trec` path. Two-track screen+camera sources show on both tracks — that's fine, `rebuild` clones every track a source touches, so sync is preserved. Reference the source ONCE in the keep list.
 
 ### 3. Transcribe + detect silences for each on-timeline source
+Create a scratch dir in the project (survives reboots, scoped to this project):
+```sh
+RC="$P/.camkit/rc"
+mkdir -p "$RC"
+```
 For every on-timeline source (run these in parallel — they're independent):
 ```sh
-camkit transcribe "<trec>" --out /tmp/rc/srcN.json     # word-level Whisper (OpenAI whisper-1)
+camkit transcribe "<trec>" --out "$RC/srcN.json"       # word-level Whisper (OpenAI whisper-1)
 camkit silences   "<trec>" --db -35 --min 0.4          # dead-air ranges from ffmpeg
 ```
 Loop over them in one backgrounded batch and `wait`; ~45 min across 8 sources finishes in a couple of minutes.
 - `--db` / `--min` tune sensitivity. Start `-35 dB`, `0.4 s`. Adjust if needed (quieter mic → `-30`; only long pauses → `--min 0.8`).
 - The transcript JSON is `{text, words:[{word,start,end}], segments}`. Use word times for content boundaries; use `silences` for pauses.
-- **`silences` output format** is `silence  START-END (DUR)` per line (camkit reformats ffmpeg). Parse those, not raw `silence_start:` lines.
+- **`silences` output format** is `silence  START-ENDs  (DURs)` per line (e.g. `silence  12.30-15.40s  (3.10s)`). Parse the two float timestamps, not raw `silence_start:` lines.
 
 #### The dead-air-inside-a-take trap (the silences you've missed)
 Whisper does NOT emit a gap for a pause mid-sentence — it **stretches one word** to span it. A line in the words dump like `233.00-239.74 of` (a 6.7 s "of") is 6 s of silence hiding inside a kept take. Two defences, use both:
@@ -51,16 +60,18 @@ Whisper does NOT emit a gap for a pause mid-sentence — it **stretches one word
 
 These recordings are **heavy retake material**: the presenter says each beat many times, restarting, until the last pass is clean. The keeper for a beat is almost always the **final complete clean delivery**; everything before it is false starts to cut.
 
-Reading 3000+ raw words per source into context is wasteful. Three helper scripts in `scripts/` (run from wherever the `srcN.json` transcripts live, e.g. `python3 <skill>/scripts/takes.py 5`) make it tractable:
-- **`takes.py srcN [gap]`** — segments a source's words into takes by splitting on word-gaps > `gap` (default 1.2 s) and prints `[start-end] (dur Nw) text` per take. Collapses the chaos to a readable list; the keeper is usually the last full take of each beat.
-- **`range.py srcN A B`** — prints `idx start-end word` for words in `[A,B]`. Use it to set precise cut points inside a take (isolating a clean tail from leading stammers, or splitting out stretched-word dead air).
-- **`dump.py srcN`** — prints every word with index + timestamps (last resort for a short source).
+Reading 3000+ raw words per source into context is wasteful. Two `camkit` subcommands make it tractable:
+- **`camkit takes <transcript.json> [gap]`** — segments a source's words into takes by splitting on word-gaps > `gap` (default 1.2 s) and prints `[start-end] (dur Nw) text` per take. Degenerate Whisper padding words are stripped automatically. Collapses the chaos to a readable list; the keeper is usually the last full take of each beat.
+- **`camkit words <transcript.json> <start> <end>`** — prints `idx start-end word` for words in `[start,end]`. Use it to set precise cut points inside a take (isolating a clean tail from leading stammers, or splitting out stretched-word dead air).
 
-All three expect `srcN.json` (the `--out` transcript) in the current directory.
+```sh
+camkit takes "$RC/src5.json"                # scan the takes for src 5
+camkit words "$RC/src5.json" 120.0 140.0    # drill into a specific range
+```
 
 Map script lines to takes, pick the final clean delivery of each, drop retakes. Honor the script's order — `rebuild` lays kept ranges in the order you list them. (When no script: keep the natural take order, still picking the clean final pass of each beat.)
 
-Whisper pads clip ends with degenerate zero-length words at one frozen timestamp (e.g. 20 words all at `223.78`). Ignore them — end the last keep range before they start.
+Whisper pads clip ends with degenerate zero-length words at one frozen timestamp (e.g. 20 words all at `223.78`). `camkit takes` already strips these — but when building keep ranges by hand, end the last range before they start.
 
 ### 5. Build the keep list
 Write the plan as a JSON file for `--from` (cleaner than a long `--keep` string): `{"keep":[{"src":N,"start":S,"end":E}, ...]}` in final playback order. For each kept span:
@@ -68,16 +79,16 @@ Write the plan as a JSON file for `--from` (cleaner than a long `--keep` string)
 - **Drop long mid-span pauses** by splitting one span into two around the silence (`N:a-b N:c-d`).
 - **Cut filler** ("um", "uh", "so", "you know", false starts, restarts, "let me redo that").
 - **Cut losing retakes** entirely.
-- Leave ~0.15–0.25 s of breath at cut points so it doesn't sound clipped.
+- Leave ~0.15-0.25 s of breath at cut points so it doesn't sound clipped.
 - Cross-check: for every kept range, confirm no `silences` entry and no stretched word sits inside it un-cut. If one does, split it out. This is the step that catches the silences you've missed before.
 
 ```sh
-camkit rebuild --project "$P" --from /tmp/rc/keep.json --dry-run
+camkit rebuild --project "$P" --from "$RC/keep.json" --dry-run
 ```
 
 ### 6. Dry-run, review, apply
 ```sh
-camkit rebuild --project "$P" --from /tmp/rc/keep.json --dry-run   # read the plan: segment count, total duration
+camkit rebuild --project "$P" --from "$RC/keep.json" --dry-run   # read the plan: segment count, total duration
 ```
 Writing needs Camtasia to release the project. The close→rebuild handoff has a lock quirk — handle it:
 ```sh
@@ -86,11 +97,11 @@ camkit docs                                              # confirm: no open docu
 ```
 Camtasia releases the document but often leaves a **stale `~project.tscproj` lock file** behind, so an immediate `rebuild` fails with "Lock file present". Once `camkit docs` shows nothing open, that lock is stale and `--force` is correct:
 ```sh
-camkit rebuild --project "$P" --from /tmp/rc/keep.json --force   # backs up to project.tscproj.bak, then writes
+camkit rebuild --project "$P" --from "$RC/keep.json" --force   # backs up to project.tscproj.bak, then writes
 camkit open --project "$P"                               # reopen for the user to review
 camkit info --project "$P" | grep duration               # sanity-check the new duration
 ```
-Only `--force` past the lock once `camkit docs` confirms the project is closed — never while it's genuinely open in Camtasia.
+Only `--force` past the lock once `camkit docs` confirms the project is closed — never while it's genuinely open in Camtasia. **Never script or automate `--force`** — it must only follow a human-readable `camkit docs` showing no open documents.
 
 ## Recutting
 `rebuild` backs up to `project.tscproj.bak`. To cut again from the ORIGINAL (not the already-cut file), restore first or you'll cut the cut:
