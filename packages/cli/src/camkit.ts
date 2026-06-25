@@ -3,7 +3,7 @@
  * camkit — Camtasia project CLI over @camkit/core + @camkit/darwin.
  * Port of edit-videos/cam.ts with identical command behavior and output.
  *
- *   camkit info|clips|sources|rebuild|silences|transcribe|status|close|open|docs
+ *   camkit info|clips|sources|rebuild|silences|transcribe|status|close|open|docs|takes|words
  *
  * --project accepts a .cmproj dir or project.tscproj path; defaults to
  * ./search.cmproj/project.tscproj. Read commands never mutate; rebuild backs
@@ -28,9 +28,13 @@ import {
   projectInfo,
   bundleName,
   resolveProjectPath,
+  secondsToUnits,
+  segmentTakes,
+  tracks,
+  wordsInRange,
   type KeepSeg,
 } from "@camkit/core";
-import { camtasiaDocPaths, camtasiaDocs, closeProject, openProject, projectStatus } from "@camkit/darwin";
+import { camtasiaDocPaths, closeProject, openProject, projectStatus } from "@camkit/darwin";
 import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
 import { listPresets, resolvePreset } from "./presets.ts";
 import { version } from "../package.json";
@@ -198,7 +202,26 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
   },
   docs: {
     usage: "camkit docs",
-    about: ["List all projects currently open in Camtasia. macOS only."],
+    about: ["List all projects currently open in Camtasia with their full", "paths. macOS only."],
+  },
+  takes: {
+    usage: "camkit takes <transcript.json> [gap]",
+    about: [
+      "Segment a transcript's word list into takes by splitting on inter-word",
+      "gaps larger than `gap` seconds (default 1.2). Prints one line per take:",
+      '  [start-end] (dur Nw) text',
+      "Degenerate Whisper padding words (zero-length stamps at clip ends) are",
+      "stripped before boundaries are computed, so durations match audible",
+      "speech. Use this to find the clean final take of each beat.",
+    ],
+  },
+  words: {
+    usage: "camkit words <transcript.json> <start> <end>",
+    about: [
+      "Print every word (with its index + timestamps) inside the inclusive",
+      "[start, end] window. Use it to set precise cut points inside a take,",
+      "isolate a clean tail, or inspect a stretched-word dead-air artifact.",
+    ],
   },
 };
 
@@ -225,7 +248,9 @@ function printHelp(cmd?: string): void {
     status: "is this project open in Camtasia? (exit 2 if so)",
     close: "save-and-close the project document in Camtasia",
     open: "(re)open the project in Camtasia",
-    docs: "list projects open in Camtasia",
+    docs: "list projects open in Camtasia (with paths)",
+    takes: "segment a transcript into takes by word gaps",
+    words: "print words in a time range from a transcript",
   };
   for (const [c, s] of Object.entries(summaries)) console.log(`  ${c.padEnd(11)} ${s}`);
   console.log();
@@ -480,12 +505,52 @@ function cmdOpen(argv: string[]) {
 }
 
 function cmdDocs() {
-  const docs = camtasiaDocs();
+  const docs = camtasiaDocPaths();
   if (!docs.length) {
     console.log("Camtasia is not running, or has no projects open.");
     return;
   }
-  for (const d of docs) console.log(d);
+  for (const d of docs) console.log(`${d.name}\t${d.path}`);
+}
+
+function cmdTakes(argv: string[]) {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  if (positional.length < 1) throw new Error("Usage: camkit takes <transcript.json> [gap]");
+  const file = resolve(positional[0]);
+  if (!existsSync(file)) throw new Error(`No such file: ${file}`);
+  const gap = positional[1] != null ? Number(positional[1]) : 1.2;
+  if (Number.isNaN(gap)) throw new Error("gap must be a number of seconds");
+
+  const transcript = JSON.parse(readFileSync(file, "utf8"));
+  if (!Array.isArray(transcript.words)) {
+    throw new Error(`${file} has no word-level "words" array (transcribe with whisper-1).`);
+  }
+  const takes = segmentTakes(transcript.words, gap);
+  for (const t of takes) {
+    console.log(`[${t.start.toFixed(2).padStart(7)}-${t.end.toFixed(2).padStart(7)}] (${(t.end - t.start).toFixed(1).padStart(5)}s ${String(t.words.length).padStart(3)}w) ${t.text}`);
+  }
+}
+
+function cmdWords(argv: string[]) {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  if (positional.length < 3) {
+    throw new Error("Usage: camkit words <transcript.json> <start> <end>");
+  }
+  const file = resolve(positional[0]);
+  if (!existsSync(file)) throw new Error(`No such file: ${file}`);
+  const start = Number(positional[1]);
+  const end = Number(positional[2]);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    throw new Error("start and end must be numbers (seconds).");
+  }
+
+  const transcript = JSON.parse(readFileSync(file, "utf8"));
+  if (!Array.isArray(transcript.words)) {
+    throw new Error(`${file} has no word-level "words" array (transcribe with whisper-1).`);
+  }
+  for (const w of wordsInRange(transcript.words, start, end)) {
+    console.log(`${String(w.idx).padStart(4)} ${w.start.toFixed(2).padStart(7)}-${w.end.toFixed(2).padStart(7)}  ${w.word}`);
+  }
 }
 
 const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
@@ -501,6 +566,8 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   close: cmdClose,
   open: cmdOpen,
   docs: cmdDocs,
+  takes: cmdTakes,
+  words: cmdWords,
 };
 
 const [cmd, ...rest] = process.argv.slice(2);

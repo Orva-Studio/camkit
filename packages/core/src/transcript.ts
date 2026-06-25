@@ -62,3 +62,70 @@ export function shapeTranscript(raw: any, source: string, model: string): Transc
     segments: (raw.segments ?? []).map((s: any) => ({ id: s.id, start: s.start, end: s.end, text: s.text })),
   };
 }
+
+/** Minimum word duration (seconds) to count as real speech. Whisper pads
+ * clip ends with degenerate zero-length words at a frozen timestamp; these
+ * must be stripped before computing take boundaries or the reported start,
+ * end, and word count are all wrong. */
+export const DEGENERATE_THRESHOLD = 0.05;
+
+/** Whether a word is degenerate (zero-length or near-zero). Whisper emits
+ * these as padding at clip ends — a cluster of words all sharing the same
+ * frozen timestamp (e.g. 20 words at 223.78). */
+export function isDegenerate(w: TranscriptWord, threshold = DEGENERATE_THRESHOLD): boolean {
+  return w.end - w.start < threshold;
+}
+
+export interface Take {
+  start: number;
+  end: number;
+  words: TranscriptWord[];
+  text: string;
+}
+
+/**
+ * Segment a word list into takes by splitting on inter-word gaps larger than
+ * `gap` seconds (default 1.2). Degenerate tail words (Whisper padding — zero-
+ * length stamps at a frozen timestamp) are stripped from each take before
+ * boundaries are computed, so the reported start/end/duration reflect audible
+ * speech, not padding artifacts. Takes that are empty after stripping are
+ * dropped entirely.
+ */
+export function segmentTakes(words: TranscriptWord[], gap = 1.2): Take[] {
+  const takes: TranscriptWord[][] = [];
+  let cur: TranscriptWord[] = [];
+
+  for (const w of words) {
+    if (cur.length > 0 && w.start - cur[cur.length - 1].end > gap) {
+      takes.push(cur);
+      cur = [];
+    }
+    cur.push(w);
+  }
+  if (cur.length > 0) takes.push(cur);
+
+  return takes
+    .map((raw) => raw.filter((w) => !isDegenerate(w)))
+    .filter((w) => w.length > 0)
+    .map((words) => ({
+      start: words[0].start,
+      end: words[words.length - 1].end,
+      words,
+      text: words.map((w) => w.word).join(" "),
+    }));
+}
+
+/**
+ * Filter words that fall within [start, end] (inclusive on both ends).
+ * Each result includes the original index in the source array so callers
+ * can reference exact positions for cut-point decisions.
+ */
+export function wordsInRange(
+  words: TranscriptWord[],
+  start: number,
+  end: number,
+): { idx: number; word: string; start: number; end: number }[] {
+  return words
+    .map((w, idx) => ({ idx, word: w.word, start: w.start, end: w.end }))
+    .filter((w) => w.start >= start && w.end <= end);
+}
