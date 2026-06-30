@@ -33,7 +33,20 @@ Tried hand-building a minimal empty `project.tscproj` (real top-level fields, em
 
 This makes `new`/`add` deterministic and the JSON the source of truth Camtasia itself produced.
 
-### T1 `add` - decision needed (decided: Option B, JSON-generate + open)
+### T1 STATUS (session 2026-06-30 end)
+
+- **`camkit new` DONE + verified.** Copies embedded `empty-project.json`, patches dims, opens. Commit `b5d65a7`. Camtasia opens it cleanly.
+- **`camkit add` IMPLEMENTED but BROKEN - crashes Camtasia on open.** Pure builder `addMediaToProject` (packages/core/src/addMedia.ts) + CLI `cmdAdd` (ffprobe via `probeMedia`, copies media into `media/<epoch.micros>/`, close/write/reopen). Unit tests pass (pure JSON shape), but the live schema is wrong: opening a generated project gives -609 / app quits.
+
+**Why it likely crashes / NEXT STEPS (do this first next session):**
+1. **Ground-truth capture.** Camtasia is the source of truth - reverse-engineering from edited projects (map.cmproj) is what produced the broken schema. Drive: `make new document` → menu **File > Import** (submenu found; needs exploring) → pick an mp4 via the open dialog (`Cmd+Shift+G` to type path) → drag bin clip to timeline OR just import + save → read the resulting `project.tscproj`. Diff its sourceBin + timeline media against what `cmdAdd` writes.
+2. **Known schema gap:** an mp4 *with audio* is NOT one VMFile. Camtasia splits it into a **VMFile (video)** and a separate **AMFile (audio)** media (AMFile has a `channelNumber` field), often on different tracks. My builder emits a single VMFile referencing a source with both sourceTracks - probably the crash. Replicate the VMFile+AMFile split.
+3. Other suspect fields to verify against ground truth: `loudnessNormalization` (I set false; real=true), source `metadata.timeAdded` micros, clip `metadata` (real has audiateLinkedSession/clipSpeedAttribute/colorAttribute), and whether tracks need matching `trackAttributes`.
+4. Re-verify E2E: generated project must OPEN in Camtasia without crashing AND show the clip on the timeline. Do not mark add done until both hold.
+
+Code is committed as WIP (clearly marked) so it is not lost - fix the schema, don't rewrite from scratch.
+
+### T1 `add` - decision (decided: Option B, JSON-generate + open)
 - **Option A (true live):** Accessibility import + drag media to timeline. Fragile (drag coords), matches the live-edit spirit.
 - **Option B (robust, recommended):** generate/extend the `project.tscproj` JSON on disk, then `open`. For project *creation* nothing is open yet, so the live constraint does not apply. Reuses the JSON engine, headless-testable. Core currently only *rewrites* an existing doc (clones a template media) - it has no from-scratch project builder, so Option B needs either a checked-in empty `.cmproj` template or a minimal-tscproj writer.
 

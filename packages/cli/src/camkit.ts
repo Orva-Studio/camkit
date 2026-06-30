@@ -10,11 +10,12 @@
  * up to .bak and refuses to run with a ~project.tscproj lock or an existing
  * backup unless --force.
  */
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   applyRebuild,
   createProject,
+  addMediaToProject,
   injectDynamicCaptions,
   filterSilences,
   listClips,
@@ -36,7 +37,7 @@ import {
   type KeepSeg,
 } from "@camkit/core";
 import { camtasiaDocPaths, closeProject, openProject, projectStatus } from "@camkit/darwin";
-import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
+import { exportAudio, probeMedia, runSilencedetect, transcribeRecording } from "./media.ts";
 import { listPresets, resolvePreset } from "./presets.ts";
 import { version } from "../package.json";
 
@@ -247,6 +248,7 @@ function printHelp(cmd?: string): void {
     silences: "ffmpeg silencedetect on a recording",
     transcribe: "word-level Whisper transcript of a recording",
     new: "create a new empty .cmproj and open it in Camtasia",
+    add: "add a media file to a project timeline (close/write/reopen if open)",
     status: "is this project open in Camtasia? (exit 2 if so)",
     close: "save-and-close the project document in Camtasia",
     open: "(re)open the project in Camtasia",
@@ -531,6 +533,48 @@ function cmdNew(argv: string[]) {
   }
 }
 
+function cmdAdd(argv: string[]) {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  if (positional.length < 1) {
+    throw new Error("Usage: camkit add <media> [--project P] [--at S] [--track N]");
+  }
+  const media = resolve(positional[0]);
+  if (!existsSync(media)) throw new Error(`No such file: ${media}`);
+
+  const tscproj = resolveProjectPath(flag(argv, "--project"));
+  const bundle = dirname(tscproj);
+
+  const at = flag(argv, "--at") != null ? Number(flag(argv, "--at")) : 0;
+  const track = flag(argv, "--track") != null ? Number(flag(argv, "--track")) : 0;
+  if (Number.isNaN(at) || Number.isNaN(track)) throw new Error("--at / --track must be numbers.");
+
+  // Camtasia never re-reads project.tscproj while the doc is open and
+  // overwrites it on save, so close (saving any GUI edits) before writing,
+  // then reopen so the user sees the new clip.
+  const wasOpen = process.platform === "darwin" && projectStatus(tscproj).open;
+  if (wasOpen) closeProject(tscproj);
+
+  const probe = probeMedia(media);
+
+  // Camtasia copies imported media into the bundle under media/<epoch.micros>/.
+  const stamp = (Date.now() / 1000).toFixed(6);
+  const destDir = join(bundle, "media", stamp);
+  mkdirSync(destDir, { recursive: true });
+  const name = basename(media);
+  copyFileSync(media, join(destDir, name));
+
+  const doc = JSON.parse(readFileSync(tscproj, "utf8"));
+  addMediaToProject(doc, { relPath: `./media/${stamp}/${name}`, name, ...probe }, { at, track });
+  copyFileSync(tscproj, `${tscproj}.bak`);
+  writeFileSync(tscproj, JSON.stringify(doc, null, 1));
+  console.log(`✓ added ${name} at ${at}s on track ${track}`);
+
+  if (wasOpen) {
+    openProject(tscproj);
+    console.log("✓ reopened in Camtasia");
+  }
+}
+
 function cmdDocs() {
   const docs = camtasiaDocPaths();
   if (!docs.length) {
@@ -591,6 +635,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   transcribe: cmdTranscribe,
   status: cmdStatus,
   new: cmdNew,
+  add: cmdAdd,
   close: cmdClose,
   open: cmdOpen,
   docs: cmdDocs,

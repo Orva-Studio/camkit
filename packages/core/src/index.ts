@@ -5,3 +5,4 @@ export * from "./silences.ts";
 export * from "./transcript.ts";
 export * from "./captions.ts";
 export * from "./newProject.ts";
+export * from "./addMedia.ts";

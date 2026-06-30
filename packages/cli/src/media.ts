@@ -6,7 +6,7 @@
  * word-level timestamps), write the stable transcript JSON contract.
  * Never touches source media; Camtasia stays the final renderer.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { existsSync } from "node:fs";
@@ -49,6 +49,40 @@ export function runSilencedetect(input: string, db: string, min: string): Promis
     child.on("error", rej);
     child.on("close", (code) => (code === 0 ? res(err) : rej(new Error(err))));
   });
+}
+
+/** Probe a media file's dimensions, duration, fps, and audio via ffprobe. */
+export function probeMedia(file: string): {
+  width: number;
+  height: number;
+  durationS: number;
+  fps: number;
+  audio?: { channels: number; sampleRate: number };
+} {
+  const r = spawnSync(
+    "ffprobe",
+    ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", file],
+    { encoding: "utf8" },
+  );
+  if (r.status !== 0) throw new Error(`ffprobe failed for ${file}: ${r.stderr?.trim() ?? ""}`);
+  const data = JSON.parse(r.stdout);
+  const streams: any[] = data.streams ?? [];
+  const v = streams.find((s) => s.codec_type === "video");
+  const a = streams.find((s) => s.codec_type === "audio");
+  if (!v) throw new Error(`${file} has no video stream.`);
+
+  const [num, den] = String(v.r_frame_rate ?? "30/1").split("/").map(Number);
+  const fps = den ? num / den : num;
+  const durationS = Number(data.format?.duration ?? v.duration ?? 0);
+  if (!durationS) throw new Error(`Could not read duration of ${file}.`);
+
+  return {
+    width: Number(v.width),
+    height: Number(v.height),
+    durationS,
+    fps: Math.round(fps),
+    audio: a ? { channels: Number(a.channels), sampleRate: Number(a.sample_rate) } : undefined,
+  };
 }
 
 /**
