@@ -1,31 +1,42 @@
 /**
- * Append a media clip to a project's timeline by constructing the sourceBin
- * entry + VMFile timeline element Camtasia writes for an imported file.
+ * Append a media clip to a project's timeline by constructing the exact
+ * sourceBin entry + timeline elements Camtasia writes for an imported file.
  *
  * The AppleScript `add` verb is dead on Camtasia Mac 2026.1.3 (see CLAUDE.md),
- * so we build the JSON directly — modelled on what Camtasia itself produces
- * for a plain mp4/mov source. This is the pure builder; the CLI ffprobes the
- * file and copies it into the bundle, then calls this.
+ * so we build the JSON directly. The shapes here are not guesses — they were
+ * captured by driving Camtasia's File > Import on a real mp4 (video+audio) and
+ * a real m4a (audio-only), saving, and reading back the resulting
+ * project.tscproj (see HANDOFF-live-cut.md, T1 ground-truth capture).
+ *
+ * Ground truth, summarised:
+ *  - sourceBin sourceTracks use editRate 1000 (millisecond ranges), NOT 44100.
+ *  - A video+audio clip lands on the timeline as a `UnifiedMedia` wrapper
+ *    holding a `video` (VMFile, trackNumber 0) and an `audio` (AMFile,
+ *    trackNumber 1) child. An audio-only clip lands as a bare `AMFile`.
+ *  - geometryCrop params are {type,defaultValue,interp} objects, not bare 0.0.
  */
 
 /** Camtasia's project-level time base: units per second on the timeline. */
 export const PROJECT_EDIT_RATE = 705600000;
-/** Source-track time base Camtasia uses for sourceBin ranges. */
-const SOURCE_EDIT_RATE = 44100;
+/** Source-track time base Camtasia uses for sourceBin ranges (milliseconds). */
+const SOURCE_EDIT_RATE = 1000;
 
 export interface MediaProbe {
-  /** Path stored in the project, relative to the bundle (e.g. ./media/<ts>/x.mov). */
+  /** Path stored in the project, relative to the bundle (e.g. ./media/<ts>/x.mp4). */
   relPath: string;
-  /** Bare filename, used in metaData / ident fields. */
+  /** Bare filename, used in metaData fields. */
   name: string;
-  width: number;
-  height: number;
   /** Duration in seconds. */
   durationS: number;
-  /** Video frame rate (stored as the video sourceTrack sampleRate). */
-  fps: number;
-  /** Audio stream, omitted for video-only media. */
+  /** Video stream; omitted for audio-only media. */
+  video?: { width: number; height: number; fps: number };
+  /** Audio stream; omitted for video-only media. */
   audio?: { channels: number; sampleRate: number };
+  /**
+   * Source file's modification time, formatted YYYYMMDDTHHMMSS, stored as the
+   * sourceBin `lastMod`. Defaults to now if omitted.
+   */
+  lastMod?: string;
 }
 
 export interface AddMediaOptions {
@@ -49,25 +60,46 @@ function maxId(o: any): number {
   return m;
 }
 
+/** Camtasia timestamp: 20260630T163047 (local time, no separators). */
+function stamp(d: Date): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return (
+    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T` +
+    `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  );
+}
+
+/** geometryCropN parameter object as Camtasia writes it. */
+function geometryCrops() {
+  const crop = { type: "double", defaultValue: 0.0, interp: "eioe" };
+  return { geometryCrop0: { ...crop }, geometryCrop1: { ...crop }, geometryCrop2: { ...crop }, geometryCrop3: { ...crop } };
+}
+
 /**
  * Mutates `doc` in place: adds the source to `sourceBin` and a clip to the
  * given timeline track. Returns the new source id.
  */
 export function addMediaToProject(doc: any, probe: MediaProbe, opts: AddMediaOptions = {}): number {
+  if (!probe.video && !probe.audio) throw new Error(`${probe.name} has neither a video nor an audio stream.`);
+
   const at = opts.at ?? 0;
   const trackIndex = opts.track ?? 0;
+  const ident = probe.name.replace(/\.[^.]+$/, "");
+  const now = new Date();
 
   const sourceId = maxId(doc) + 1;
   const sourceRange = [0, Math.round(probe.durationS * SOURCE_EDIT_RATE)];
-  const lastMod = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "").replace("T", "T");
+  const w = probe.video?.width ?? 0;
+  const h = probe.video?.height ?? 0;
 
-  const sourceTracks: any[] = [
-    {
+  const sourceTracks: any[] = [];
+  if (probe.video) {
+    sourceTracks.push({
       range: sourceRange,
       type: 0, // video
       editRate: SOURCE_EDIT_RATE,
-      trackRect: [0, 0, probe.width, probe.height],
-      sampleRate: probe.fps,
+      trackRect: [0, 0, w, h],
+      sampleRate: probe.video.fps,
       bitDepth: 0,
       numChannels: 0,
       integratedLUFS: 100.0,
@@ -75,8 +107,8 @@ export function addMediaToProject(doc: any, probe: MediaProbe, opts: AddMediaOpt
       tag: 0,
       metaData: `${probe.name};`,
       parameters: {},
-    },
-  ];
+    });
+  }
   if (probe.audio) {
     sourceTracks.push({
       range: sourceRange,
@@ -86,8 +118,9 @@ export function addMediaToProject(doc: any, probe: MediaProbe, opts: AddMediaOpt
       sampleRate: probe.audio.sampleRate,
       bitDepth: 0,
       numChannels: probe.audio.channels,
-      // ponytail: skip ffmpeg loudnorm analysis; disable normalization below
-      // so these placeholders are never used. Add real LUFS if auto-normalize matters.
+      // ponytail: real Camtasia measures LUFS/peak here. We disable
+      // loudnessNormalization (below) so these placeholders are never used.
+      // Add an ffmpeg loudnorm pass if auto-normalize ever matters.
       integratedLUFS: 100.0,
       peakLevel: -1.0,
       tag: 0,
@@ -96,41 +129,74 @@ export function addMediaToProject(doc: any, probe: MediaProbe, opts: AddMediaOpt
     });
   }
 
-  const source = {
+  doc.sourceBin ??= [];
+  doc.sourceBin.push({
     id: sourceId,
     src: probe.relPath,
-    rect: [0, 0, probe.width, probe.height],
-    lastMod,
+    rect: [0, 0, w, h],
+    lastMod: probe.lastMod ?? stamp(now),
     loudnessNormalization: false,
     sourceTracks,
-    metadata: { timeAdded: lastMod },
-  };
-  (doc.sourceBin ??= []).push(source);
+    metadata: { timeAdded: stamp(now) },
+  });
 
-  const durUnits = Math.round(probe.durationS * PROJECT_EDIT_RATE);
-  const clip = {
+  const dur = Math.round(probe.durationS * PROJECT_EDIT_RATE);
+  const start = Math.round(at * PROJECT_EDIT_RATE);
+  const span = { start, duration: dur, mediaStart: 0, mediaDuration: dur, scalar: 1 };
+
+  const audioChild = () => ({
     id: maxId(doc) + 1,
-    _type: "VMFile",
+    _type: "AMFile",
     src: sourceId,
-    trackNumber: trackIndex,
-    attributes: { ident: probe.name },
-    parameters: { geometryCrop0: 0.0, geometryCrop1: 0.0, geometryCrop2: 0.0, geometryCrop3: 0.0 },
+    trackNumber: probe.video ? 1 : 0,
+    attributes: { ident: probe.video ? "" : ident, gain: 1.0, mixToMono: false, loudnessNormalization: false, sourceFileOffset: 0 },
+    channelNumber: "0",
+    parameters: {},
     effects: [],
-    start: Math.round(at * PROJECT_EDIT_RATE),
-    duration: durUnits,
-    mediaStart: 0,
-    mediaDuration: durUnits,
-    scalar: 1,
-    metadata: {
-      "default-width": { type: "double", value: probe.width },
-      "default-height": { type: "double", value: probe.height },
-      "default-scale0": { type: "double", value: 1.0 },
-      "default-scale1": { type: "double", value: 1.0 },
-      lockAspectRatio: { type: "bool", value: true },
-      effectApplied: "none",
-    },
+    ...span,
     animationTracks: {},
-  };
+  });
+
+  let clip: any;
+  if (probe.video) {
+    const video = {
+      id: maxId(doc) + 1,
+      _type: "VMFile",
+      src: sourceId,
+      trackNumber: 0,
+      attributes: { ident },
+      parameters: geometryCrops(),
+      effects: [],
+      ...span,
+      animationTracks: {},
+    };
+    const audio = probe.audio ? audioChild() : undefined;
+    clip = {
+      id: maxId(doc) + 1,
+      _type: "UnifiedMedia",
+      video,
+      ...(audio ? { audio } : {}),
+      ...span,
+      metadata: {
+        audiateLinkedSession: "",
+        clipSpeedAttribute: { type: "bool", value: false },
+        colorAttribute: { type: "color", value: [0, 0, 0, 0] },
+        "default-scale": "1",
+        effectApplied: "none",
+        lockAspectRatio: { type: "bool", value: true },
+      },
+    };
+  } else {
+    clip = {
+      ...audioChild(),
+      metadata: {
+        audiateLinkedSession: "",
+        clipSpeedAttribute: { type: "bool", value: false },
+        colorAttribute: { type: "color", value: [0, 0, 0, 0] },
+        effectApplied: "none",
+      },
+    };
+  }
 
   const tracks = doc.timeline?.sceneTrack?.scenes?.[0]?.csml?.tracks;
   if (!Array.isArray(tracks)) throw new Error("Project has no timeline tracks.");

@@ -36,15 +36,16 @@ This makes `new`/`add` deterministic and the JSON the source of truth Camtasia i
 ### T1 STATUS (session 2026-06-30 end)
 
 - **`camkit new` DONE + verified.** Copies embedded `empty-project.json`, patches dims, opens. Commit `b5d65a7`. Camtasia opens it cleanly.
-- **`camkit add` IMPLEMENTED but BROKEN - crashes Camtasia on open.** Pure builder `addMediaToProject` (packages/core/src/addMedia.ts) + CLI `cmdAdd` (ffprobe via `probeMedia`, copies media into `media/<epoch.micros>/`, close/write/reopen). Unit tests pass (pure JSON shape), but the live schema is wrong: opening a generated project gives -609 / app quits.
+- **`camkit add` DONE + verified (session 2026-06-30).** Builder rewritten against ground truth captured by driving File > Import on a real mp4 and m4a. A generated project (empty `new` + `add clip.mp4` + `add crawl.m4a --track 1`) opens in Camtasia with no crash and shows both clips: video color-bars on track 0, audio waveform on track 1, ~133s total, canvas renders. Unit tests cover all three stream shapes.
 
-**Why it likely crashes / NEXT STEPS (do this first next session):**
-1. **Ground-truth capture.** Camtasia is the source of truth - reverse-engineering from edited projects (map.cmproj) is what produced the broken schema. Drive: `make new document` → menu **File > Import** (submenu found; needs exploring) → pick an mp4 via the open dialog (`Cmd+Shift+G` to type path) → drag bin clip to timeline OR just import + save → read the resulting `project.tscproj`. Diff its sourceBin + timeline media against what `cmdAdd` writes.
-2. **Known schema gap:** an mp4 *with audio* is NOT one VMFile. Camtasia splits it into a **VMFile (video)** and a separate **AMFile (audio)** media (AMFile has a `channelNumber` field), often on different tracks. My builder emits a single VMFile referencing a source with both sourceTracks - probably the crash. Replicate the VMFile+AMFile split.
-3. Other suspect fields to verify against ground truth: `loudnessNormalization` (I set false; real=true), source `metadata.timeAdded` micros, clip `metadata` (real has audiateLinkedSession/clipSpeedAttribute/colorAttribute), and whether tracks need matching `trackAttributes`.
-4. Re-verify E2E: generated project must OPEN in Camtasia without crashing AND show the clip on the timeline. Do not mark add done until both hold.
+**Ground-truth schema (captured 2026-06-30, build 2026.1.3) - the facts that fixed it:**
+1. **sourceBin sourceTracks use `editRate` 1000 (millisecond ranges), NOT 44100.** The old 44100 was the crash root. `range: [0, durationMs]`.
+2. **Timeline shape depends on streams.** Video+audio mp4 → a `UnifiedMedia` wrapper holding `video` (VMFile, inner trackNumber 0) + `audio` (AMFile, inner trackNumber 1, with `channelNumber:"0"` and attributes gain/mixToMono/loudnessNormalization/sourceFileOffset). Audio-only m4a → a **bare AMFile** (no wrapper). The old single-VMFile shape was wrong.
+3. **geometryCropN params are `{type:"double", defaultValue:0.0, interp:"eioe"}` objects**, not bare `0.0`.
+4. **Clip `metadata`** has audiateLinkedSession/clipSpeedAttribute/colorAttribute/effectApplied (+ default-scale/lockAspectRatio for video). `loudnessNormalization` set false (we skip the ffmpeg LUFS pass; real Camtasia measures it).
+5. `probeMedia` now allows audio-only (was throwing "no video stream").
 
-Code is committed as WIP (clearly marked) so it is not lost - fix the schema, don't rewrite from scratch.
+The capture method (reusable for cut/split/trim verification): `make new document`/`camkit new` → menu **File > Import > Media...** → `Cmd+Shift+G` type path → import lands in bin → drag bin clip to timeline via CGEvent synthetic drag (no cliclick/Quartz on this box; ~20-line ctypes script posting LMOUSEDOWN/DRAGGED/UP) → `Cmd+S` → read `project.tscproj`.
 
 ### T1 `add` - decision (decided: Option B, JSON-generate + open)
 - **Option A (true live):** Accessibility import + drag media to timeline. Fragile (drag coords), matches the live-edit spirit.

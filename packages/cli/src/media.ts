@@ -53,10 +53,8 @@ export function runSilencedetect(input: string, db: string, min: string): Promis
 
 /** Probe a media file's dimensions, duration, fps, and audio via ffprobe. */
 export function probeMedia(file: string): {
-  width: number;
-  height: number;
   durationS: number;
-  fps: number;
+  video?: { width: number; height: number; fps: number };
   audio?: { channels: number; sampleRate: number };
 } {
   const r = spawnSync(
@@ -69,18 +67,21 @@ export function probeMedia(file: string): {
   const streams: any[] = data.streams ?? [];
   const v = streams.find((s) => s.codec_type === "video");
   const a = streams.find((s) => s.codec_type === "audio");
-  if (!v) throw new Error(`${file} has no video stream.`);
+  if (!v && !a) throw new Error(`${file} has neither a video nor an audio stream.`);
 
-  const [num, den] = String(v.r_frame_rate ?? "30/1").split("/").map(Number);
-  const fps = den ? num / den : num;
-  const durationS = Number(data.format?.duration ?? v.duration ?? 0);
+  const durationS = Number(data.format?.duration ?? v?.duration ?? a?.duration ?? 0);
   if (!durationS) throw new Error(`Could not read duration of ${file}.`);
 
+  let video: { width: number; height: number; fps: number } | undefined;
+  if (v) {
+    const [num, den] = String(v.r_frame_rate ?? "30/1").split("/").map(Number);
+    const fps = den ? num / den : num;
+    video = { width: Number(v.width), height: Number(v.height), fps: Math.round(fps) };
+  }
+
   return {
-    width: Number(v.width),
-    height: Number(v.height),
     durationS,
-    fps: Math.round(fps),
+    video,
     audio: a ? { channels: Number(a.channels), sampleRate: Number(a.sample_rate) } : undefined,
   };
 }

@@ -564,6 +564,8 @@ function cmdAdd(argv: string[]) {
   copyFileSync(media, join(destDir, name));
 
   const doc = JSON.parse(readFileSync(tscproj, "utf8"));
+  // ponytail: lastMod defaults to now in the builder; it's metadata Camtasia
+  // recomputes, not worth statting the source file to mirror its mtime.
   addMediaToProject(doc, { relPath: `./media/${stamp}/${name}`, name, ...probe }, { at, track });
   copyFileSync(tscproj, `${tscproj}.bak`);
   writeFileSync(tscproj, JSON.stringify(doc, null, 1));
