@@ -80,6 +80,7 @@ Write the plan as a JSON file for `--from` (cleaner than a long `--keep` string)
 - **Cut filler** ("um", "uh", "so", "you know", false starts, restarts, "let me redo that").
 - **Cut losing retakes** entirely.
 - Leave ~0.15-0.25 s of breath at cut points so it doesn't sound clipped.
+- **Pad every range boundary outward by ~6 ms** (0.006 s): subtract it from each `start`, add it to each `end`. Whisper word/silence timestamps land slightly inside the actual audio, so cutting exactly on them clips word attacks and tails. The pad is a safety margin, applied on top of the breath above — keep it even when a tight cut means little breath.
 - Cross-check: for every kept range, confirm no `silences` entry and no stretched word sits inside it un-cut. If one does, split it out. This is the step that catches the silences you've missed before.
 
 ```sh
