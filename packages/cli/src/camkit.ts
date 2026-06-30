@@ -14,6 +14,7 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   applyRebuild,
+  createProject,
   injectDynamicCaptions,
   filterSilences,
   listClips,
@@ -245,6 +246,7 @@ function printHelp(cmd?: string): void {
     captions: "inject an animated Dynamic Caption track from a transcript",
     silences: "ffmpeg silencedetect on a recording",
     transcribe: "word-level Whisper transcript of a recording",
+    new: "create a new empty .cmproj and open it in Camtasia",
     status: "is this project open in Camtasia? (exit 2 if so)",
     close: "save-and-close the project document in Camtasia",
     open: "(re)open the project in Camtasia",
@@ -504,6 +506,31 @@ function cmdOpen(argv: string[]) {
   console.log(`✓ opened ${bundleName(path)}`);
 }
 
+function cmdNew(argv: string[]) {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  if (positional.length < 1) {
+    throw new Error("Usage: camkit new <path.cmproj> [--width N] [--height N] [--no-open]");
+  }
+  let bundle = resolve(positional[0]);
+  if (!bundle.endsWith(".cmproj")) bundle += ".cmproj";
+
+  const w = flag(argv, "--width");
+  const h = flag(argv, "--height");
+  const width = w != null ? Number(w) : undefined;
+  const height = h != null ? Number(h) : undefined;
+  if ((w != null && Number.isNaN(width)) || (h != null && Number.isNaN(height))) {
+    throw new Error("--width / --height must be numbers (px).");
+  }
+
+  createProject(bundle, { width, height });
+  console.log(`✓ created ${bundleName(bundle)}`);
+
+  if (!argv.includes("--no-open") && process.platform === "darwin") {
+    openProject(join(bundle, "project.tscproj"));
+    console.log(`✓ opened in Camtasia`);
+  }
+}
+
 function cmdDocs() {
   const docs = camtasiaDocPaths();
   if (!docs.length) {
@@ -563,6 +590,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   silences: cmdSilences,
   transcribe: cmdTranscribe,
   status: cmdStatus,
+  new: cmdNew,
   close: cmdClose,
   open: cmdOpen,
   docs: cmdDocs,
