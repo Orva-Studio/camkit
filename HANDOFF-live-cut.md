@@ -2,6 +2,41 @@
 
 Scratch handoff doc. Delete before merging. A companion memory file is auto-loaded each session: `camtasia-applescript-live-edit.md` - read it, it has the raw probe results.
 
+## Re-probe results 2026-06-30 (build 2026.1.3) - READ FIRST
+
+Re-probed the AppleScript suite live this session. The project-scoped suite is **more broken than the handoff implies**:
+
+| Op | Result |
+|----|--------|
+| `make new document` | ✅ creates "Untitled" with an id |
+| open / close / name / docs / paths (existing code) | ✅ |
+| `playheadTime of document N` (read) | ✅ |
+| `playheadTime of document N` (set) | ❌ silently ignored - set 3.5, reads back 0.0, no error |
+| `add <doc> file ... at time` (addMedia:) | ❌ -1708 on `document`, -10000 on `project` |
+| `save`, `sources of`, any project element access | ❌ -10000 |
+| `project N` reference | ❌ broken - every op -10000; the real object is `document N` (its `class` reports `document` but it answers project props like playheadTime) |
+
+**Consequences:**
+- The hidden suite **cannot add media, cannot save, cannot set the playhead.** Confirms (and extends) the "suite can't address clips" finding. ALL live mutation must go through Accessibility / System Events menu driving (T2) - including moving the playhead (use keyboard/menu, NOT the `playheadTime` setter).
+- `add` has no live AppleScript path. Two options for T1, undecided - see below.
+- The "uncommitted new/add verified last session" work is gone AND could not have used AppleScript `add` (it's dead here); it was likely Accessibility-drag or JSON-generation. Treat T1 as greenfield.
+
+### T1 `new` - schema-from-scratch is OUT (crashed Camtasia)
+
+Tried hand-building a minimal empty `project.tscproj` (real top-level fields, empty `sourceBin`, empty `csml.tracks`). Opening it **crashed Camtasia** (app quit; `open` then returns -609 "Connection is invalid"). The skeleton is missing required structure - generating tscproj from a guessed schema is too fragile to pursue.
+
+**Robust approach instead: check in a real empty `.cmproj` template.**
+1. User does File > New in Camtasia, saves an empty project once.
+2. Commit that `project.tscproj` as `packages/core/templates/empty.tscproj`.
+3. `camkit new <path>` = copy template into a new `.cmproj` bundle, patch `width`/`height`/`editRate`/`title`, then `open`. No schema guessing.
+4. `camkit add` (below, Option B) appends a real sourceBin entry + timeline media to that file before/after open.
+
+This makes `new`/`add` deterministic and the JSON the source of truth Camtasia itself produced.
+
+### T1 `add` - decision needed (decided: Option B, JSON-generate + open)
+- **Option A (true live):** Accessibility import + drag media to timeline. Fragile (drag coords), matches the live-edit spirit.
+- **Option B (robust, recommended):** generate/extend the `project.tscproj` JSON on disk, then `open`. For project *creation* nothing is open yet, so the live constraint does not apply. Reuses the JSON engine, headless-testable. Core currently only *rewrites* an existing doc (clones a template media) - it has no from-scratch project builder, so Option B needs either a checked-in empty `.cmproj` template or a minimal-tscproj writer.
+
 ## Goal
 
 Add **live** timeline-editing subcommands to camkit that edit a project **open in Camtasia**, with no close/edit-JSON/reopen cycle. The headline op is **ripple cut** (`camkit cut --from S --to S`). `split` and `trim` fall out of the same primitive.
