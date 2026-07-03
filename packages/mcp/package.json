@@ -1,6 +1,6 @@
 {
   "name": "@camkit/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "private": true,
   "description": "Placeholder: MCP server wrapping @camkit/core (not implemented yet)."
