@@ -102,11 +102,25 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "  --from FILE    JSON [{src,start,end}] or {keep:[...]}",
       "  --dry-run      print the plan, write nothing (ALWAYS do this first)",
       "  --force        override a stale ~project.tscproj lock / overwrite an existing .bak",
+      "  --incremental  warm Camtasia's cache in stages instead of one write (see below)",
+      "  --warm-batch N     new fragments per source per stage (default 2)",
+      "  --settle-seconds S seconds to wait between stages (default 20)",
       "",
       "Safety: backs up to project.tscproj.bak before writing; refuses to run",
       "if the lock file is present or the backup would be clobbered (no --force).",
       "To RECUT after a rebuild, first restore the backup (cp .bak over the",
       "project) — otherwise you back up the already-cut file.",
+      "",
+      "Cutting a single screen-recording source into 3+ fragments in one write",
+      "can hang Camtasia on open (cursor-tracking/SmartFocus analysis seems to",
+      "choke on many brand-new ranges introduced simultaneously — see",
+      "github.com/Orva-Studio/camkit/issues/17). --incremental works around it:",
+      "it writes the cut in stages, adding at most --warm-batch new fragments",
+      "per screen source each stage, closing/reopening Camtasia and waiting",
+      "--settle-seconds between stages so each addition is small and adjacent",
+      "to material already analyzed. Needs Camtasia running on macOS; slower",
+      "than a single write (stages × settle-seconds), but the final result on",
+      "disk is identical to a plain rebuild.",
     ],
   },
   "export-audio": {
@@ -315,9 +329,36 @@ function cmdSources(argv: string[]) {
   }
 }
 
-function cmdRebuild(argv: string[]) {
+/** segs filtered so no source contributes more than `cap` of its own entries
+ * (in their original relative order), used to grow a screen source's fragment
+ * count gradually across warm-up stages instead of all at once. */
+function capPerSource(segs: KeepSeg[], cap: number): KeepSeg[] {
+  const seen: Record<number, number> = {};
+  return segs.filter((s) => {
+    seen[s.src] = (seen[s.src] ?? 0) + 1;
+    return seen[s.src] <= cap;
+  });
+}
+
+/** Growing per-source caps (batchSize, 2*batchSize, …) up to the point every
+ * source's full fragment count is included — the last stage always equals
+ * the full `segs` list. */
+function warmStages(segs: KeepSeg[], batchSize: number): KeepSeg[][] {
+  const perSrc: Record<number, number> = {};
+  for (const s of segs) perSrc[s.src] = (perSrc[s.src] ?? 0) + 1;
+  const maxCount = Math.max(1, ...Object.values(perSrc));
+  const stageCount = Math.ceil(maxCount / batchSize);
+  return Array.from({ length: stageCount }, (_, i) => capPerSource(segs, (i + 1) * batchSize));
+}
+
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+async function cmdRebuild(argv: string[]) {
   const force = has(argv, "--force");
   const dryRun = has(argv, "--dry-run");
+  const incremental = has(argv, "--incremental");
+  const batchSize = flag(argv, "--warm-batch") ? Number(flag(argv, "--warm-batch")) : 2;
+  const settleSeconds = flag(argv, "--settle-seconds") ? Number(flag(argv, "--settle-seconds")) : 20;
   const { path, doc } = loadProject(flag(argv, "--project"));
 
   let segs: KeepSeg[];
@@ -337,6 +378,15 @@ function cmdRebuild(argv: string[]) {
       `  src ${e.src}  ${e.sourceStart.toFixed(2)}-${e.sourceEnd.toFixed(2)}s  →  timeline ${e.timelineStart.toFixed(2)}-${e.timelineEnd.toFixed(2)}s  (${e.trackCount} track[s])`,
     );
   }
+
+  const stages = incremental ? warmStages(segs, batchSize) : null;
+  if (stages && stages.length > 1) {
+    console.log(
+      `\n--incremental: ${stages.length} stage(s), ≤${batchSize} new fragment(s) per source per stage, ` +
+        `${settleSeconds}s settle between stages (needs Camtasia running on macOS).`,
+    );
+  }
+
   if (dryRun) {
     console.log("\n--dry-run: no files written.");
     return;
@@ -353,10 +403,36 @@ function cmdRebuild(argv: string[]) {
   }
   copyFileSync(path, bak);
 
-  applyRebuild(doc, plan);
-  writeFileSync(path, JSON.stringify(doc, null, 2));
+  if (!stages || stages.length <= 1) {
+    applyRebuild(doc, plan);
+    writeFileSync(path, JSON.stringify(doc, null, 2));
+    console.log(`\n✓ backed up → ${bak}`);
+    console.log(`✓ wrote ${path}`);
+    return;
+  }
+
+  // Cache-warming path: introduce each source's fragments a few at a time so
+  // Camtasia analyzes (cursor tracking / SmartFocus / thumbnails) small,
+  // incremental additions instead of many brand-new ranges from one source
+  // in a single load — the latter is what hangs Camtasia on open (camkit#17).
   console.log(`\n✓ backed up → ${bak}`);
-  console.log(`✓ wrote ${path}`);
+  for (const [i, stageSegs] of stages.entries()) {
+    const stageDoc = JSON.parse(JSON.stringify(doc));
+    applyRebuild(stageDoc, planRebuild(doc, stageSegs));
+
+    if (projectStatus(path).open) {
+      console.log(`  [stage ${i + 1}/${stages.length}] closing…`);
+      closeProject(path);
+    }
+    writeFileSync(path, JSON.stringify(stageDoc, null, 2));
+    console.log(`  [stage ${i + 1}/${stages.length}] wrote ${stageSegs.length} segment(s), opening…`);
+    openProject(path);
+    if (i < stages.length - 1) {
+      console.log(`  [stage ${i + 1}/${stages.length}] settling ${settleSeconds}s…`);
+      await sleep(settleSeconds * 1000);
+    }
+  }
+  console.log(`\n✓ incremental rebuild complete (${stages.length} stage(s)) → ${path}`);
 }
 
 async function cmdExportAudio(argv: string[]) {
