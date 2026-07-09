@@ -38,7 +38,9 @@ rewrites the timeline to keep only the good segments.
   a ProRes 422 `.mov` by driving Camtasia's GUI export (Camtasia stays the
   renderer — effects, transitions, Dynamic Captions and `.trec` video streams
   need its engine, no ffmpeg re-encode). macOS-only; needs Accessibility
-  permission. Verified on Camtasia 2026.1.3.
+  permission. **Brittle:** it drives Camtasia's export menus via UI scripting,
+  verified only on Camtasia 2026.1.3 — menu renames or a Welcome window can
+  break it. Prefer a short smoke export after Camtasia updates.
 - **@camkit/mcp** — placeholder; will wrap core later.
 
 ## Prerequisites

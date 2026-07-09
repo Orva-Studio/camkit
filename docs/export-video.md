@@ -1,5 +1,12 @@
 # Why `export-video` drives the GUI
 
+**This command is brittle.** It does not call a stable export API — it clicks
+Camtasia's Export menus through macOS Accessibility (System Events). Verified
+only on **Camtasia 2026.1.3**. After a Camtasia update, or if the Welcome window
+steals focus, menu labels change, or Accessibility is missing, expect failures
+that look like "Export dialog did not appear" rather than clean errors. Smoke-test
+a short project after upgrades; do not treat this as a headless CI-grade pipeline.
+
 Every other camkit command works on `project.tscproj` directly — that file
 *describes* the timeline, and a description is just data we can read and
 rewrite. **Rendering is different**: turning that description into a `.mov`
@@ -43,8 +50,9 @@ preference, verified against **Camtasia 2026.1.3**:
    ProRes 422* → set name/folder → Export. This is the **only** path that
    actually produces a file today.
 
-Consequences of (4): **not headless.** It needs Camtasia running and frontmost
-on a logged-in GUI session (no `ssh`/daemon), the controlling terminal must
-have **Accessibility** permission (System Settings ▸ Privacy & Security ▸
-Accessibility), and the render blocks the GUI while it runs. It's also brittle
-across Camtasia versions — the element paths are verified only on 2026.1.3.
+Consequences of (4): **not headless** and **version-fragile.** It needs
+Camtasia running and frontmost on a logged-in GUI session (no `ssh`/daemon),
+the controlling terminal must have **Accessibility** permission (System
+Settings ▸ Privacy & Security ▸ Accessibility), and the render blocks the GUI
+while it runs. Element paths and menu labels are verified only on 2026.1.3 —
+re-probe after each Camtasia release.
