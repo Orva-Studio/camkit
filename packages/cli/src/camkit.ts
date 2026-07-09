@@ -167,10 +167,11 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
   },
   transcribe: {
     usage:
-      "camkit transcribe <input> [--engine openai|whisper-cpp] [--out FILE] [--model whisper-1] [--srt [FILE]] [--keep-audio]",
+      "camkit transcribe <input> [--engine openai|replicate|whisper-cpp] [--out FILE] [--model whisper-1] [--srt [FILE]] [--keep-audio]",
     about: [
       "Word-level transcription (needs ffmpeg). Engine by precedence: --engine,",
-      "then OPENAI_API_KEY (OpenAI whisper-1, best quality), then local",
+      "then OPENAI_API_KEY (OpenAI whisper-1, best quality), then",
+      "REPLICATE_API_TOKEN (hosted incredibly-fast-whisper), then local",
       "whisper.cpp if `whisper-cli` is on PATH (brew install whisper-cpp). The",
       "local engine reuses Camtasia's tiny model by default — override with",
       "CAMKIT_WHISPER_MODEL / CAMKIT_WHISPER_BIN. OpenAI model must be whisper-1;",
