@@ -42,27 +42,34 @@ rewrites the timeline to keep only the good segments.
 - **ffmpeg** on PATH — required by `camkit export-audio`, `silences`, and
   `transcribe` (`brew install ffmpeg`)
 - **A transcription engine** — required by `camkit transcribe` only; see
-  *Transcription engines* below. Either `OPENAI_API_KEY` (cloud) or
-  `whisper-cpp` (local, `brew install whisper-cpp`).
+  *Transcription engines* below. `OPENAI_API_KEY` (cloud),
+  `REPLICATE_API_TOKEN` (hosted), or `whisper-cpp` (local,
+  `brew install whisper-cpp`).
 - **macOS + Camtasia** — required by `status`/`close`/`open`/`docs` only;
   everything else is cross-platform
 
 ## Transcription engines
 
 `camkit transcribe` resolves an engine by precedence (highest wins): an
-explicit `--engine openai|whisper-cpp` flag, then environment, then the
-`auto` default. `auto` picks:
+explicit `--engine openai|replicate|whisper-cpp` flag, then environment, then
+the `auto` default. `auto` picks:
 
 1. **`OPENAI_API_KEY` set → OpenAI `whisper-1`** (best quality). Note: this is
    pinned to `whisper-1`, not a "newer" model — the `gpt-4o-transcribe` models
    don't return the word-level timestamps the rebuild step needs.
-2. **Else `whisper-cli` on PATH → local whisper.cpp.** By default it reuses the
+2. **Else `REPLICATE_API_TOKEN` set → Replicate** hosted
+   `vaibhavs10/incredibly-fast-whisper` (word-level timestamps). Beats local
+   whisper-cpp whenever the token is present — use `--engine whisper-cpp` to
+   force local. Model version is pinned in code; refresh via Replicate's
+   `/v1/models/.../versions` API if predictions start failing.
+3. **Else `whisper-cli` on PATH → local whisper.cpp.** By default it reuses the
    `ggml` model Camtasia downloads to
    `Camtasia.app/Contents/Resources/models/speechToText/` (tiny/quantized —
    fast, lower fidelity). Override with `CAMKIT_WHISPER_MODEL` (path to a
    larger `ggml-*.bin`) or `CAMKIT_WHISPER_BIN`.
-3. **Neither → an error** telling you to set `OPENAI_API_KEY` or run
-   `brew install whisper-cpp`. camkit never auto-installs (no silent `brew`).
+4. **None → an error** telling you to set `OPENAI_API_KEY` or
+   `REPLICATE_API_TOKEN`, or run `brew install whisper-cpp`. camkit never
+   auto-installs (no silent `brew`).
 
 camkit reuses Camtasia's *model file* but not its bundled `libwhisper.dylib`
 (private, code-signed, undocumented ABI) — you bring your own `whisper-cli`

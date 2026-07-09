@@ -171,9 +171,10 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
     about: [
       "Word-level transcription (needs ffmpeg). Engine by precedence: --engine,",
       "then OPENAI_API_KEY (OpenAI whisper-1, best quality), then",
-      "REPLICATE_API_TOKEN (hosted incredibly-fast-whisper), then local",
-      "whisper.cpp if `whisper-cli` is on PATH (brew install whisper-cpp). The",
-      "local engine reuses Camtasia's tiny model by default — override with",
+      "REPLICATE_API_TOKEN (hosted incredibly-fast-whisper — beats local",
+      "whisper-cpp when set; use --engine whisper-cpp to force local), then",
+      "local whisper.cpp if `whisper-cli` is on PATH (brew install whisper-cpp).",
+      "The local engine reuses Camtasia's tiny model by default — override with",
       "CAMKIT_WHISPER_MODEL / CAMKIT_WHISPER_BIN. OpenAI model must be whisper-1;",
       "the gpt-4o-transcribe models don't return word timestamps. Extracts +",
       "downsamples audio, never touches source media. Writes {source, model,",
@@ -461,7 +462,7 @@ async function cmdTranscribe(argv: string[]) {
   const positional = argv.filter((a, i) => !a.startsWith("--") && !valued.includes(argv[i - 1]));
   if (positional.length !== 1) {
     throw new Error(
-      "Usage: camkit transcribe <input> [--engine openai|whisper-cpp] [--out file.json] " +
+      "Usage: camkit transcribe <input> [--engine openai|replicate|whisper-cpp] [--out file.json] " +
         "[--model whisper-1] [--srt [file.srt]] [--keep-audio]",
     );
   }

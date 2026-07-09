@@ -155,15 +155,26 @@ export type Engine = "openai" | "whisper-cpp" | "replicate";
 
 const REPLICATE_MODEL = "vaibhavs10/incredibly-fast-whisper";
 // Pinned version — the model-name predictions shortcut 404s for this model
-// (community models need an explicit version). Latest as of this writing;
-// `curl .../models/vaibhavs10/incredibly-fast-whisper/versions` to refresh.
+// (community models need an explicit version). Refresh with:
+//   curl -sS -H "Authorization: Bearer $REPLICATE_API_TOKEN" \
+//     https://api.replicate.com/v1/models/vaibhavs10/incredibly-fast-whisper/versions \
+//     | jq -r '.results[0].id'
 const REPLICATE_VERSION = "3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c";
+/** Poll interval and hard deadline so a stuck prediction cannot hang forever. */
+const REPLICATE_POLL_MS = 2000;
+const REPLICATE_TIMEOUT_MS = 15 * 60 * 1000;
+/** Gap (s) between words that starts a new segment — mirrors `takes` default. */
+const REPLICATE_SEGMENT_GAP_S = 1.2;
 
 /**
  * Resolve the transcription engine by precedence: explicit choice, then env,
  * then auto (OpenAI if a key is set, else Replicate, else local whisper.cpp
  * if installed). Throws a helpful message when none is available — never
  * auto-installs.
+ *
+ * Note: if REPLICATE_API_TOKEN is set and OPENAI_API_KEY is not, auto picks
+ * Replicate even when whisper-cli is on PATH. Use `--engine whisper-cpp` to
+ * force local.
  */
 function resolveEngine(explicit?: string): Engine {
   if (explicit === "openai" || explicit === "whisper-cpp" || explicit === "replicate") return explicit;
@@ -177,13 +188,55 @@ function resolveEngine(explicit?: string): Engine {
   );
 }
 
+export type ReplicateChunk = { timestamp: [number, number | null]; text: string };
+
+/**
+ * Shape Replicate incredibly-fast-whisper output into the same
+ * {duration, text, words, segments} contract as the other engines.
+ * Groups words into segments on gaps larger than REPLICATE_SEGMENT_GAP_S.
+ */
+export function shapeReplicateOutput(output: {
+  text?: string;
+  chunks?: ReplicateChunk[];
+}): { duration: number | null; text: string; words: { word: string; start: number; end: number }[]; segments: any[] } {
+  const chunks = output.chunks ?? [];
+  const words = chunks
+    .map((c, i) => ({
+      word: c.text.trim(),
+      start: c.timestamp[0],
+      end: c.timestamp[1] ?? chunks[i + 1]?.timestamp[0] ?? c.timestamp[0],
+    }))
+    .filter((w) => w.word.length > 0);
+
+  const segments: any[] = [];
+  let cur: { start: number; end: number; text: string[] } | null = null;
+  for (const w of words) {
+    if (cur && w.start - cur.end > REPLICATE_SEGMENT_GAP_S) {
+      segments.push({ id: segments.length, start: cur.start, end: cur.end, text: cur.text.join(" ") });
+      cur = null;
+    }
+    if (!cur) cur = { start: w.start, end: w.end, text: [w.word] };
+    else {
+      cur.end = w.end;
+      cur.text.push(w.word);
+    }
+  }
+  if (cur) segments.push({ id: segments.length, start: cur.start, end: cur.end, text: cur.text.join(" ") });
+
+  return {
+    duration: words.length ? words[words.length - 1].end : null,
+    text: output.text ?? "",
+    words,
+    segments,
+  };
+}
+
 /**
  * Transcribe via Replicate's hosted `incredibly-fast-whisper` (word-level
  * timestamps via `timestamp: "word"`). Audio is sent as a base64 data URI —
  * fine at our downsampled mono 16 kHz sizes, no upload endpoint needed.
- * Polls the prediction until it finishes; shapes the chunk list into the same
- * {duration, text, words, segments} contract as the other engines, grouping
- * words into segments on >1.2s gaps (mirrors `takes`' default gap).
+ * Polls the prediction until it finishes (with a hard timeout); shapes the
+ * chunk list into the shared transcript contract.
  */
 async function callReplicate(audioPath: string): Promise<any> {
   const token = process.env.REPLICATE_API_TOKEN;
@@ -202,46 +255,30 @@ async function callReplicate(audioPath: string): Promise<any> {
   });
   if (!create.ok) throw new Error(`Replicate API ${create.status}: ${(await create.text()).slice(0, 500)}`);
   let pred: any = await create.json();
+  if (!pred.urls?.get) {
+    throw new Error("Replicate create response missing urls.get poll endpoint.");
+  }
 
+  const deadline = Date.now() + REPLICATE_TIMEOUT_MS;
   while (pred.status !== "succeeded" && pred.status !== "failed" && pred.status !== "canceled") {
-    await new Promise((r) => setTimeout(r, 2000));
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Replicate prediction timed out after ${REPLICATE_TIMEOUT_MS / 1000}s ` +
+          `(last status: ${pred.status ?? "unknown"}). Check https://replicate.com/predictions/${pred.id ?? ""}.`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, REPLICATE_POLL_MS));
     const poll = await fetch(pred.urls.get, { headers: { Authorization: `Bearer ${token}` } });
+    if (!poll.ok) {
+      throw new Error(`Replicate poll ${poll.status}: ${(await poll.text()).slice(0, 500)}`);
+    }
     pred = await poll.json();
   }
   if (pred.status !== "succeeded") {
     throw new Error(`Replicate prediction ${pred.status}: ${pred.error ?? "unknown error"}`);
   }
 
-  const chunks: Array<{ timestamp: [number, number | null]; text: string }> = pred.output?.chunks ?? [];
-  const words = chunks
-    .map((c, i) => ({
-      word: c.text.trim(),
-      start: c.timestamp[0],
-      end: c.timestamp[1] ?? chunks[i + 1]?.timestamp[0] ?? c.timestamp[0],
-    }))
-    .filter((w) => w.word.length > 0);
-
-  const segments: any[] = [];
-  let cur: { start: number; end: number; text: string[] } | null = null;
-  for (const w of words) {
-    if (cur && w.start - cur.end > 1.2) {
-      segments.push({ id: segments.length, start: cur.start, end: cur.end, text: cur.text.join(" ") });
-      cur = null;
-    }
-    if (!cur) cur = { start: w.start, end: w.end, text: [w.word] };
-    else {
-      cur.end = w.end;
-      cur.text.push(w.word);
-    }
-  }
-  if (cur) segments.push({ id: segments.length, start: cur.start, end: cur.end, text: cur.text.join(" ") });
-
-  return {
-    duration: words.length ? words[words.length - 1].end : null,
-    text: pred.output?.text ?? "",
-    words,
-    segments,
-  };
+  return shapeReplicateOutput(pred.output ?? {});
 }
 
 export interface TranscribeOpts {
