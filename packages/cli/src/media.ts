@@ -151,22 +151,97 @@ export function shapeWhisperCpp(data: any): any {
   return { duration: lastEnd, text, words, segments };
 }
 
-export type Engine = "openai" | "whisper-cpp";
+export type Engine = "openai" | "whisper-cpp" | "replicate";
+
+const REPLICATE_MODEL = "vaibhavs10/incredibly-fast-whisper";
+// Pinned version — the model-name predictions shortcut 404s for this model
+// (community models need an explicit version). Latest as of this writing;
+// `curl .../models/vaibhavs10/incredibly-fast-whisper/versions` to refresh.
+const REPLICATE_VERSION = "3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c";
 
 /**
  * Resolve the transcription engine by precedence: explicit choice, then env,
- * then auto (OpenAI if a key is set, else local whisper.cpp if installed).
- * Throws a helpful message when neither is available — never auto-installs.
+ * then auto (OpenAI if a key is set, else Replicate, else local whisper.cpp
+ * if installed). Throws a helpful message when none is available — never
+ * auto-installs.
  */
 function resolveEngine(explicit?: string): Engine {
-  if (explicit === "openai" || explicit === "whisper-cpp") return explicit;
-  if (explicit) throw new Error(`Unknown --engine "${explicit}" (use openai or whisper-cpp).`);
+  if (explicit === "openai" || explicit === "whisper-cpp" || explicit === "replicate") return explicit;
+  if (explicit) throw new Error(`Unknown --engine "${explicit}" (use openai, replicate, or whisper-cpp).`);
   if (process.env.OPENAI_API_KEY) return "openai";
+  if (process.env.REPLICATE_API_TOKEN) return "replicate";
   if (Bun.which(WHISPER_BIN)) return "whisper-cpp";
   throw new Error(
-    "No transcription engine available. Set OPENAI_API_KEY for the OpenAI engine, " +
+    "No transcription engine available. Set OPENAI_API_KEY or REPLICATE_API_TOKEN, " +
       "or install the local engine with `brew install whisper-cpp`.",
   );
+}
+
+/**
+ * Transcribe via Replicate's hosted `incredibly-fast-whisper` (word-level
+ * timestamps via `timestamp: "word"`). Audio is sent as a base64 data URI —
+ * fine at our downsampled mono 16 kHz sizes, no upload endpoint needed.
+ * Polls the prediction until it finishes; shapes the chunk list into the same
+ * {duration, text, words, segments} contract as the other engines, grouping
+ * words into segments on >1.2s gaps (mirrors `takes`' default gap).
+ */
+async function callReplicate(audioPath: string): Promise<any> {
+  const token = process.env.REPLICATE_API_TOKEN;
+  if (!token) throw new Error("REPLICATE_API_TOKEN is not set.");
+
+  const buf = await readFile(audioPath);
+  const dataUri = `data:audio/wav;base64,${buf.toString("base64")}`;
+
+  const create = await fetch("https://api.replicate.com/v1/predictions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      version: REPLICATE_VERSION,
+      input: { audio: dataUri, batch_size: 8, timestamp: "word" },
+    }),
+  });
+  if (!create.ok) throw new Error(`Replicate API ${create.status}: ${(await create.text()).slice(0, 500)}`);
+  let pred: any = await create.json();
+
+  while (pred.status !== "succeeded" && pred.status !== "failed" && pred.status !== "canceled") {
+    await new Promise((r) => setTimeout(r, 2000));
+    const poll = await fetch(pred.urls.get, { headers: { Authorization: `Bearer ${token}` } });
+    pred = await poll.json();
+  }
+  if (pred.status !== "succeeded") {
+    throw new Error(`Replicate prediction ${pred.status}: ${pred.error ?? "unknown error"}`);
+  }
+
+  const chunks: Array<{ timestamp: [number, number | null]; text: string }> = pred.output?.chunks ?? [];
+  const words = chunks
+    .map((c, i) => ({
+      word: c.text.trim(),
+      start: c.timestamp[0],
+      end: c.timestamp[1] ?? chunks[i + 1]?.timestamp[0] ?? c.timestamp[0],
+    }))
+    .filter((w) => w.word.length > 0);
+
+  const segments: any[] = [];
+  let cur: { start: number; end: number; text: string[] } | null = null;
+  for (const w of words) {
+    if (cur && w.start - cur.end > 1.2) {
+      segments.push({ id: segments.length, start: cur.start, end: cur.end, text: cur.text.join(" ") });
+      cur = null;
+    }
+    if (!cur) cur = { start: w.start, end: w.end, text: [w.word] };
+    else {
+      cur.end = w.end;
+      cur.text.push(w.word);
+    }
+  }
+  if (cur) segments.push({ id: segments.length, start: cur.start, end: cur.end, text: cur.text.join(" ") });
+
+  return {
+    duration: words.length ? words[words.length - 1].end : null,
+    text: pred.output?.text ?? "",
+    words,
+    segments,
+  };
 }
 
 export interface TranscribeOpts {
@@ -193,6 +268,10 @@ export async function transcribeRecording(opts: TranscribeOpts): Promise<void> {
       modelLabel = opts.model;
       process.stderr.write(`→ transcribing with OpenAI ${modelLabel}…\n`);
       raw = await callWhisper(audioPath, opts.model);
+    } else if (engine === "replicate") {
+      modelLabel = `replicate ${REPLICATE_MODEL}`;
+      process.stderr.write(`→ transcribing with ${modelLabel}…\n`);
+      raw = await callReplicate(audioPath);
     } else {
       const modelPath = process.env.CAMKIT_WHISPER_MODEL ?? CAMTASIA_MODEL;
       modelLabel = `whisper.cpp ${basename(modelPath)}`;
