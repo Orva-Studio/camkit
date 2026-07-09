@@ -26,14 +26,19 @@ rewrites the timeline to keep only the good segments.
   project.tscproj while a document is open, so the edit cycle is
   `close (saves) → edit JSON → open (reloads)`. Throws on other platforms.
 - **@camkit/cli** — the `camkit` binary: info, clips, sources, rebuild,
-  export-audio, captions, silences, transcribe, status, close, open, docs.
+  export-audio, export-video, captions, silences, transcribe, status, close,
+  open, docs.
   Rebuild always backs up to `.bak` and refuses to run with a
   `~project.tscproj` lock or an existing backup unless `--force`. Always
   `--dry-run` first. `export-audio` flat-mixes the timeline's audio to one file
   (m4a/wav/flac/…) for cleanup in Audacity/Auphonic — pure ffmpeg, honours track
   mute and per-clip gain (`--raw` to bypass). `captions` injects an animated
   Dynamic Caption track straight into the project from a transcript (same
-  backup/lock safety as rebuild).
+  backup/lock safety as rebuild). `export-video` renders the current timeline to
+  a ProRes 422 `.mov` by driving Camtasia's GUI export (Camtasia stays the
+  renderer — effects, transitions, Dynamic Captions and `.trec` video streams
+  need its engine, no ffmpeg re-encode). macOS-only; needs Accessibility
+  permission. Verified on Camtasia 2026.1.3.
 - **@camkit/mcp** — placeholder; will wrap core later.
 
 ## Prerequisites
@@ -42,57 +47,24 @@ rewrites the timeline to keep only the good segments.
 - **ffmpeg** on PATH — required by `camkit export-audio`, `silences`, and
   `transcribe` (`brew install ffmpeg`)
 - **A transcription engine** — required by `camkit transcribe` only; see
-  *Transcription engines* below. `OPENAI_API_KEY` (cloud),
+  [Transcription engines](docs/transcription.md). `OPENAI_API_KEY` (cloud),
   `REPLICATE_API_TOKEN` (hosted), or `whisper-cpp` (local,
   `brew install whisper-cpp`).
-- **macOS + Camtasia** — required by `status`/`close`/`open`/`docs` only;
-  everything else is cross-platform
+- **macOS + Camtasia** — required by `status`/`close`/`open`/`docs` and
+  `export-video`; everything else is cross-platform
+- **Accessibility permission** — required by `camkit export-video` only. It
+  drives Camtasia's export GUI via System Events, so grant your terminal under
+  System Settings ▸ Privacy & Security ▸ Accessibility.
 
-## Transcription engines
+## Docs
 
-`camkit transcribe` resolves an engine by precedence (highest wins): an
-explicit `--engine openai|replicate|whisper-cpp` flag, then environment, then
-the `auto` default. `auto` picks:
-
-1. **`OPENAI_API_KEY` set → OpenAI `whisper-1`** (best quality). Note: this is
-   pinned to `whisper-1`, not a "newer" model — the `gpt-4o-transcribe` models
-   don't return the word-level timestamps the rebuild step needs.
-2. **Else `REPLICATE_API_TOKEN` set → Replicate** hosted
-   `vaibhavs10/incredibly-fast-whisper` (word-level timestamps). Beats local
-   whisper-cpp whenever the token is present — use `--engine whisper-cpp` to
-   force local. Model version is pinned in code; refresh via Replicate's
-   `/v1/models/.../versions` API if predictions start failing.
-3. **Else `whisper-cli` on PATH → local whisper.cpp.** By default it reuses the
-   `ggml` model Camtasia downloads to
-   `Camtasia.app/Contents/Resources/models/speechToText/` (tiny/quantized —
-   fast, lower fidelity). Override with `CAMKIT_WHISPER_MODEL` (path to a
-   larger `ggml-*.bin`) or `CAMKIT_WHISPER_BIN`.
-4. **None → an error** telling you to set `OPENAI_API_KEY` or
-   `REPLICATE_API_TOKEN`, or run `brew install whisper-cpp`. camkit never
-   auto-installs (no silent `brew`).
-
-camkit reuses Camtasia's *model file* but not its bundled `libwhisper.dylib`
-(private, code-signed, undocumented ABI) — you bring your own `whisper-cli`
-runner. The tiny local model has coarser word timestamps, so cross-checking
-with `camkit silences` matters even more on the local path.
-
-## Captions in the Camtasia UI
-
-To get higher-quality captions than Camtasia's built-in tiny model: transcribe
-with camkit (OpenAI or a larger local model), then either bring the result into
-Camtasia via SRT import (File ▸ Import ▸ Captions), or use `camkit captions` to
-inject an animated **Dynamic Caption** track straight into the project. Do
-**not** swap Camtasia's bundled model file — it's redownloaded on update and
-unsupported.
-
-`camkit captions --from take.transcript.json --preset "Bebas 3 Line Word Red"`
-writes the word-level stream onto the source and adds a styled caption track via
-the same `close → edit → open` cycle as rebuild (with a `.bak` backup). The
-style comes from a Camtasia Dynamic Caption preset, resolved on demand from
-Camtasia's app-support dir — list them with `camkit captions --list-presets`,
-including any custom presets you've saved. Classic (non-animated) captions
-aren't supported; they can't do the per-word highlight, and you can promote a
-Dynamic track's styling further in Camtasia's UI.
+- [Transcription engines](docs/transcription.md) — engine precedence (OpenAI,
+  Replicate, local whisper.cpp), model overrides.
+- [Captions in the Camtasia UI](docs/captions.md) — higher-quality captions,
+  Dynamic Caption presets, SRT import.
+- [Why `export-video` drives the GUI](docs/export-video.md) — why rendering
+  can't be done from JSON, the export approaches tried, and why UI scripting is
+  the only working path.
 
 ## Use
 
