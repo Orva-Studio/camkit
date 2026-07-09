@@ -91,7 +91,9 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
     ],
   },
   rebuild: {
-    usage: 'camkit rebuild [--project PATH] --keep "SRC:start-end ..." | --from FILE [--dry-run] [--force]',
+    usage:
+      'camkit rebuild [--project PATH] --keep "SRC:start-end ..." | --from FILE [--dry-run] [--force] ' +
+      "[--incremental] [--warm-batch N] [--settle-seconds S]",
     about: [
       "The core rough-cut op. Rewrites the timeline to keep only the listed",
       "source segments, in order, ripple-laid with no gaps (seconds → editRate",
@@ -282,7 +284,10 @@ function printHelp(cmd?: string): void {
 
 function flag(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const v = argv[i + 1];
+  if (v === undefined || v.startsWith("--")) return undefined;
+  return v;
 }
 const has = (argv: string[], name: string) => argv.includes(name);
 
@@ -332,7 +337,7 @@ function cmdSources(argv: string[]) {
 /** segs filtered so no source contributes more than `cap` of its own entries
  * (in their original relative order), used to grow a screen source's fragment
  * count gradually across warm-up stages instead of all at once. */
-function capPerSource(segs: KeepSeg[], cap: number): KeepSeg[] {
+export function capPerSource(segs: KeepSeg[], cap: number): KeepSeg[] {
   const seen: Record<number, number> = {};
   return segs.filter((s) => {
     seen[s.src] = (seen[s.src] ?? 0) + 1;
@@ -343,7 +348,7 @@ function capPerSource(segs: KeepSeg[], cap: number): KeepSeg[] {
 /** Growing per-source caps (batchSize, 2*batchSize, …) up to the point every
  * source's full fragment count is included — the last stage always equals
  * the full `segs` list. */
-function warmStages(segs: KeepSeg[], batchSize: number): KeepSeg[][] {
+export function warmStages(segs: KeepSeg[], batchSize: number): KeepSeg[][] {
   const perSrc: Record<number, number> = {};
   for (const s of segs) perSrc[s.src] = (perSrc[s.src] ?? 0) + 1;
   const maxCount = Math.max(1, ...Object.values(perSrc));
@@ -357,8 +362,16 @@ async function cmdRebuild(argv: string[]) {
   const force = has(argv, "--force");
   const dryRun = has(argv, "--dry-run");
   const incremental = has(argv, "--incremental");
-  const batchSize = flag(argv, "--warm-batch") ? Number(flag(argv, "--warm-batch")) : 2;
-  const settleSeconds = flag(argv, "--settle-seconds") ? Number(flag(argv, "--settle-seconds")) : 20;
+  const warmBatchRaw = flag(argv, "--warm-batch");
+  const settleSecondsRaw = flag(argv, "--settle-seconds");
+  const batchSize = warmBatchRaw !== undefined ? Number(warmBatchRaw) : 2;
+  const settleSeconds = settleSecondsRaw !== undefined ? Number(settleSecondsRaw) : 20;
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new Error(`--warm-batch must be an integer >= 1, got ${JSON.stringify(warmBatchRaw)}`);
+  }
+  if (!Number.isFinite(settleSeconds) || settleSeconds < 0) {
+    throw new Error(`--settle-seconds must be a number >= 0, got ${JSON.stringify(settleSecondsRaw)}`);
+  }
   const { path, doc } = loadProject(flag(argv, "--project"));
 
   let segs: KeepSeg[];
@@ -401,6 +414,18 @@ async function cmdRebuild(argv: string[]) {
   if (existsSync(bak) && !force) {
     throw new Error(`Backup ${bak} already exists; refusing to clobber it. Pass --force to overwrite.`);
   }
+
+  if (stages && stages.length > 1) {
+    if (process.platform !== "darwin") {
+      throw new Error("--incremental needs Camtasia running on macOS; this is not macOS.");
+    }
+    try {
+      projectStatus(path);
+    } catch (e: any) {
+      throw new Error(`--incremental needs Camtasia running on macOS: ${e.message}`);
+    }
+  }
+
   copyFileSync(path, bak);
 
   if (!stages || stages.length <= 1) {
@@ -646,26 +671,28 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   words: cmdWords,
 };
 
-const [cmd, ...rest] = process.argv.slice(2);
-if (cmd === "--version" || cmd === "-v" || cmd === "version") {
-  console.log(`camkit ${version}`);
-  process.exit(0);
-}
-if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
-  printHelp(rest[0]);
-  process.exit(0);
-}
-if (!COMMANDS[cmd]) {
-  console.error(`Unknown command "${cmd}". Run camkit --help.`);
-  process.exit(1);
-}
-if (rest.includes("--help") || rest.includes("-h")) {
-  printHelp(cmd);
-  process.exit(0);
-}
-try {
-  await COMMANDS[cmd](rest);
-} catch (e: any) {
-  process.stderr.write(`✗ ${e.message}\n`);
-  process.exit(1);
+if (import.meta.main) {
+  const [cmd, ...rest] = process.argv.slice(2);
+  if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+    console.log(`camkit ${version}`);
+    process.exit(0);
+  }
+  if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
+    printHelp(rest[0]);
+    process.exit(0);
+  }
+  if (!COMMANDS[cmd]) {
+    console.error(`Unknown command "${cmd}". Run camkit --help.`);
+    process.exit(1);
+  }
+  if (rest.includes("--help") || rest.includes("-h")) {
+    printHelp(cmd);
+    process.exit(0);
+  }
+  try {
+    await COMMANDS[cmd](rest);
+  } catch (e: any) {
+    process.stderr.write(`✗ ${e.message}\n`);
+    process.exit(1);
+  }
 }
