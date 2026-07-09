@@ -10,7 +10,7 @@
  * up to .bak and refuses to run with a ~project.tscproj lock or an existing
  * backup unless --force.
  */
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   applyRebuild,
@@ -34,7 +34,7 @@ import {
   wordsInRange,
   type KeepSeg,
 } from "@camkit/core";
-import { camtasiaDocPaths, closeProject, openProject, projectStatus } from "@camkit/darwin";
+import { camtasiaDocPaths, closeProject, exportVideo, openProject, projectStatus } from "@camkit/darwin";
 import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
 import { listPresets, resolvePreset } from "./presets.ts";
 import { version } from "../package.json";
@@ -125,6 +125,27 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "  --out FILE     output path (default ./<project>.m4a); extension wins",
       "  --format FMT   container/codec when --out is omitted (default m4a)",
       "  --raw          ignore mute/solo/gain — dry unity sum of every clip",
+    ],
+  },
+  "export-video": {
+    usage: "camkit export-video [--project PATH] [--out FILE] [--codec prores422]",
+    about: [
+      "Render an open project's timeline to a ProRes 422 .mov by driving",
+      "Camtasia's GUI export (Export ▸ Local File ▸ QuickTime ▸ Apple ProRes",
+      "422). Camtasia stays the renderer — effects, transitions and Dynamic",
+      "Captions need its engine, and .trec screen recordings carry a video",
+      "stream ffmpeg can't decode. Run after rebuild to render the edited cut.",
+      "",
+      "macOS-only and needs Accessibility permission for your terminal (System",
+      "Settings ▸ Privacy & Security ▸ Accessibility). The project must already",
+      "be open in Camtasia. With several open, pass --project to pick which",
+      "window to raise (export always drives the UI of that document). Verified",
+      "on Camtasia 2026.1.3; the GUI path is brittle across versions. Blocks",
+      "until the output file appears and its size stops growing.",
+      "",
+      "  --project PATH project that must be open (required if several are open)",
+      "  --out FILE     output path (default ./<project>.mov)",
+      "  --codec NAME   only prores422 for now (default)",
     ],
   },
   captions: {
@@ -244,6 +265,7 @@ function printHelp(cmd?: string): void {
     sources: "list media-bin sources, placed or not",
     rebuild: "rewrite timeline to kept segments (rough cut)",
     "export-audio": "mix the timeline's audio to one file (m4a/wav/…)",
+    "export-video": "render the timeline to a ProRes 422 .mov via Camtasia",
     captions: "inject an animated Dynamic Caption track from a transcript",
     silences: "ffmpeg silencedetect on a recording",
     transcribe: "word-level Whisper transcript of a recording",
@@ -369,6 +391,88 @@ async function cmdExportAudio(argv: string[]) {
   const out = flag(argv, "--out") ? resolve(flag(argv, "--out")!) : resolve(`${base}.${fmt}`);
   const durationSeconds = projectInfo(path, doc).durationSeconds;
   await exportAudio({ segs, projectPath: path, out, durationSeconds });
+}
+
+/** Pick which open Camtasia document export-video should drive. */
+function resolveOpenExportDoc(argv: string[]): { path: string; name: string } {
+  const open = camtasiaDocPaths();
+  if (!open.length) {
+    throw new Error(
+      "No project open in Camtasia. Open it first (camkit open) — export drives the open timeline.",
+    );
+  }
+  const explicit = flag(argv, "--project");
+  if (explicit) {
+    const tscproj = resolveProjectPath(explicit);
+    const name = bundleName(tscproj);
+    const bundleDir = resolve(dirname(tscproj));
+    const match = open.find(
+      (d) => d.name === name || resolve(d.path) === bundleDir || resolve(d.path) === resolve(tscproj),
+    );
+    if (!match) {
+      throw new Error(
+        `${name} is not open in Camtasia (open: ${open.map((d) => d.name).join(", ")}). ` +
+          "Open it first — export cannot target a closed project.",
+      );
+    }
+    return { path: match.path, name: match.name };
+  }
+  if (open.length === 1) return { path: open[0].path, name: open[0].name };
+  throw new Error(
+    `Several projects are open in Camtasia; pass --project to pick one:\n` +
+      open.map((d) => `  --project "${d.path}"`).join("\n"),
+  );
+}
+
+/** Wait until `path` exists and its size is stable (export finished writing). */
+async function waitForExportFile(
+  path: string,
+  opts: { appearMs?: number; stableMs?: number; overallMs?: number } = {},
+): Promise<void> {
+  const appearMs = opts.appearMs ?? 3 * 60 * 1000;
+  const stableMs = opts.stableMs ?? 2500;
+  const overallMs = opts.overallMs ?? 2 * 60 * 60 * 1000;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  const appearDeadline = Date.now() + appearMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= appearDeadline) {
+      throw new Error(
+        `Export file did not appear within ${appearMs / 1000}s: ${path}. ` +
+          "Camtasia may still be showing a dialog, or the UI path failed.",
+      );
+    }
+    await sleep(500);
+  }
+
+  const overallDeadline = Date.now() + overallMs;
+  let lastSize = -1;
+  let stableSince = Date.now();
+  while (true) {
+    if (Date.now() >= overallDeadline) {
+      throw new Error(`Export still writing after ${overallMs / 1000}s: ${path}`);
+    }
+    const size = statSync(path).size;
+    if (size > 0 && size === lastSize) {
+      if (Date.now() - stableSince >= stableMs) return;
+    } else {
+      lastSize = size;
+      stableSince = Date.now();
+    }
+    await sleep(500);
+  }
+}
+
+async function cmdExportVideo(argv: string[]) {
+  const doc = resolveOpenExportDoc(argv);
+  const base = doc.name.replace(/\.(cmproj|tscproj)$/, "");
+  const out = flag(argv, "--out") ? resolve(flag(argv, "--out")!) : resolve(`${base}.mov`);
+  const codec = flag(argv, "--codec") ?? "prores422";
+  console.log(`Starting Camtasia export of ${doc.name} → ${out} (${codec})…`);
+  exportVideo({ out, codec, documentName: doc.name });
+  console.log(`→ export started; waiting for ${out} to finish writing…`);
+  await waitForExportFile(out);
+  console.log(`✓ exported ${out}`);
 }
 
 function cmdCaptions(argv: string[]) {
@@ -561,6 +665,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   sources: cmdSources,
   rebuild: cmdRebuild,
   "export-audio": cmdExportAudio,
+  "export-video": cmdExportVideo,
   captions: cmdCaptions,
   silences: cmdSilences,
   transcribe: cmdTranscribe,
