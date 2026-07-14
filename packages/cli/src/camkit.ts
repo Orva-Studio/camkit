@@ -10,7 +10,7 @@
  * up to .bak and refuses to run with a ~project.tscproj lock or an existing
  * backup unless --force.
  */
-import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   applyRebuild,
@@ -36,6 +36,7 @@ import {
 } from "@camkit/core";
 import { camtasiaDocPaths, closeProject, exportVideo, openProject, projectStatus } from "@camkit/darwin";
 import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
+import { mediaProxiesDir, planPrune, proxyKey, type ProxyEntry } from "./proxies.ts";
 import { listPresets, resolvePreset } from "./presets.ts";
 import { version } from "../package.json";
 
@@ -247,6 +248,25 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "isolate a clean tail, or inspect a stretched-word dead-air artifact.",
     ],
   },
+  "prune-proxies": {
+    usage: "camkit prune-proxies [--keep-project PATH ...] [--older-than DAYS] [--dry-run]",
+    about: [
+      "Delete Camtasia's media-proxy cache entries (~/Library/Application",
+      "Support/TechSmith/Camtasia/MediaProxies/*.ief). Camtasia never prunes",
+      "this cache itself and proxies run into the gigabytes, so clear it out",
+      "after final exports.",
+      "",
+      "  --keep-project PATH  keep proxies for this project's media (repeatable)",
+      "  --older-than DAYS    only remove entries not touched in DAYS days",
+      "  --dry-run            print the plan, delete nothing (ALWAYS do this first)",
+      "",
+      "Proxies for mp4/mov sources regenerate on demand, so deleting them only",
+      "costs a slow first reopen. Proxies for .trec sources are load-bearing:",
+      "without one, reopening a project with 3+ cuts from that .trec hangs",
+      "Camtasia (issue #17). Pass --keep-project for every project you are",
+      "still editing. macOS only.",
+    ],
+  },
 };
 
 function printHelp(cmd?: string): void {
@@ -276,6 +296,7 @@ function printHelp(cmd?: string): void {
     docs: "list projects open in Camtasia (with paths)",
     takes: "segment a transcript into takes by word gaps",
     words: "print words in a time range from a transcript",
+    "prune-proxies": "clear Camtasia's .ief media-proxy cache",
   };
   for (const [c, s] of Object.entries(summaries)) console.log(`  ${c.padEnd(11)} ${s}`);
   console.log();
@@ -660,6 +681,71 @@ function cmdWords(argv: string[]) {
   }
 }
 
+function flagAll(argv: string[], name: string): string[] {
+  const vals: string[] = [];
+  for (let i = 0; i < argv.length - 1; i++) if (argv[i] === name) vals.push(argv[i + 1]);
+  return vals;
+}
+
+/** Proxy cache keys for every media file a project references. */
+function projectProxyKeys(projectArg: string): Set<string> {
+  const { path, doc } = loadProject(projectArg);
+  const bundleDir = dirname(path);
+  const keys = new Set<string>();
+  for (const s of doc.sourceBin ?? []) {
+    const media = resolve(bundleDir, s.src);
+    if (existsSync(media)) keys.add(proxyKey(media, statSync(media).size));
+  }
+  return keys;
+}
+
+function cmdPruneProxies(argv: string[]) {
+  if (process.platform !== "darwin") throw new Error("prune-proxies is macOS only.");
+  const dir = mediaProxiesDir();
+  if (!existsSync(dir)) {
+    console.log(`No proxy cache at ${dir}; nothing to prune.`);
+    return;
+  }
+
+  const keepKeys = new Set<string>();
+  for (const p of flagAll(argv, "--keep-project")) {
+    for (const k of projectProxyKeys(p)) keepKeys.add(k);
+  }
+  const olderRaw = flag(argv, "--older-than");
+  const olderThanDays = olderRaw != null ? Number(olderRaw) : 0;
+  if (Number.isNaN(olderThanDays) || olderThanDays < 0) {
+    throw new Error("--older-than must be a non-negative number of days.");
+  }
+
+  const entries: ProxyEntry[] = readdirSync(dir)
+    .filter((n) => n.endsWith(".ief"))
+    .map((n) => {
+      const st = statSync(join(dir, n));
+      return { name: n, size: st.size, mtimeMs: st.mtimeMs };
+    });
+  const plan = planPrune(entries, { keepKeys, olderThanDays });
+
+  const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(2);
+  const dryRun = has(argv, "--dry-run");
+  for (const e of plan.remove) {
+    console.log(`${dryRun ? "would remove" : "removing"}  ${gb(e.size).padStart(6)} GB  ${e.name}`);
+  }
+  for (const e of plan.keep) {
+    if (keepKeys.has(e.name)) console.log(`keeping       ${gb(e.size).padStart(6)} GB  ${e.name}  (--keep-project)`);
+  }
+  const freed = plan.remove.reduce((sum, e) => sum + e.size, 0);
+  if (!plan.remove.length) {
+    console.log("Nothing to prune.");
+    return;
+  }
+  if (dryRun) {
+    console.log(`\n--dry-run: would free ${gb(freed)} GB (${plan.remove.length} file[s]); nothing deleted.`);
+    return;
+  }
+  for (const e of plan.remove) unlinkSync(join(dir, e.name));
+  console.log(`\n✓ freed ${gb(freed)} GB (${plan.remove.length} file[s], ${plan.keep.length} kept)`);
+}
+
 const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   info: cmdInfo,
   clips: cmdClips,
@@ -676,6 +762,7 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   docs: cmdDocs,
   takes: cmdTakes,
   words: cmdWords,
+  "prune-proxies": cmdPruneProxies,
 };
 
 const [cmd, ...rest] = process.argv.slice(2);
