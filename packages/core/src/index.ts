@@ -4,3 +4,5 @@ export * from "./rebuild.ts";
 export * from "./silences.ts";
 export * from "./transcript.ts";
 export * from "./captions.ts";
+
+export * from "./convert.ts";

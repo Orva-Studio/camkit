@@ -85,3 +85,10 @@ test("shapeReplicateOutput fills null end times from the next chunk", () => {
 test("shapeReplicateOutput tolerates empty output", () => {
   expect(shapeReplicateOutput({})).toEqual({ duration: null, text: "", words: [], segments: [] });
 });
+
+
+test("shapeWhisperCpp excludes reversed token offsets while retaining segment text", () => {
+  const raw = shapeWhisperCpp({transcription:[{offsets:{from:1000,to:3000},text:" test words",tokens:[{text:" test",offsets:{from:2000,to:1000}},{text:" words",offsets:{from:2200,to:3000}}]}]});
+  expect(raw.words).toEqual([{word:" words",start:2.2,end:3}]);
+  expect(raw.text).toBe("test words");
+});

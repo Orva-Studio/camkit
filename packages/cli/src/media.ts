@@ -105,8 +105,8 @@ async function callWhisper(audioPath: string, model: string): Promise<any> {
  */
 async function callWhisperCpp(audioPath: string, modelPath: string): Promise<any> {
   const outBase = audioPath.replace(/\.wav$/, "");
-  // -oj writes <outBase>.json with token offsets; -np keeps stdout quiet.
-  await run(WHISPER_BIN, ["-m", modelPath, "-f", audioPath, "-oj", "-of", outBase, "-np"]);
+  // Full JSON is required: ordinary -oj omits the per-token word offsets.
+  await run(WHISPER_BIN, ["-m", modelPath, "-f", audioPath, "-ojf", "-of", outBase, "-np"]);
   const jsonPath = `${outBase}.json`;
   const data = JSON.parse(await readFile(jsonPath, "utf8"));
   await unlink(jsonPath).catch(() => {});
@@ -148,7 +148,10 @@ export function shapeWhisperCpp(data: any): any {
   }
   const lastEnd = segments.length ? segments[segments.length - 1].end : null;
   const text = segments.map((s) => s.text).join("").trim();
-  return { duration: lastEnd, text, words, segments };
+  // Some whisper.cpp versions emit reversed token offsets after long pauses.
+  // Keep the segment text, but never expose these as usable word cut points.
+  const validWords = words.filter(w => Number.isFinite(w.start) && Number.isFinite(w.end) && w.start >= 0 && w.end >= w.start);
+  return { duration: lastEnd, text, words: validWords, segments };
 }
 
 export type Engine = "openai" | "whisper-cpp" | "replicate";
