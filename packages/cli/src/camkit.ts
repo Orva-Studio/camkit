@@ -38,6 +38,7 @@ import { camtasiaDocPaths, closeProject, exportVideo, openProject, projectStatus
 import { exportAudio, runSilencedetect, transcribeRecording } from "./media.ts";
 import { mediaProxiesDir, planPrune, proxyKey, type ProxyEntry } from "./proxies.ts";
 import { listPresets, resolvePreset } from "./presets.ts";
+import { convertMedia } from "./convert.ts";
 import { version } from "../package.json";
 
 /** Load for read-only commands: --project, else the ./search.cmproj default,
@@ -91,8 +92,12 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "including unplaced takes).",
     ],
   },
+  "convert-media": {
+    usage: "camkit convert-media --project PATH --out NEW.cmproj [--dry-run] [--acknowledge-cursor-loss]",
+    about: ["Convert one uncut TREC into separate editable MP4/WAV tracks in a new bundle.", "Requires ffmpeg/ffprobe with a decoder for the recording. Preserves static framing and gain.", "Drops native cursor data and unused media-bin items; refuses unsupported existing edits.", "Writes sync-groups.json for rebuild --sync-groups; never changes the input project or app settings."],
+  },
   rebuild: {
-    usage: 'camkit rebuild [--project PATH] --keep "SRC:start-end ..." | --from FILE [--dry-run] [--force]',
+    usage: 'camkit rebuild [--project PATH] --keep "SRC:start-end ..." | --from FILE [--sync-groups FILE] [--dry-run] [--force]',
     about: [
       "The core rough-cut op. Rewrites the timeline to keep only the listed",
       "source segments, in order, ripple-laid with no gaps (seconds → editRate",
@@ -101,6 +106,9 @@ const HELP: Record<string, { usage: string; about: string[] }> = {
       "",
       '  --keep "1:159.8-179.2 2:46.3-60.0"   keep src-1 159.8–179.2s, then src-2 46.3–60.0s',
       "  --from FILE    JSON [{src,start,end}] or {keep:[...]}",
+      "  --sync-groups FILE  JSON [{sources:[{src,offset}]}]; keep uses each group’s first source",
+      "Offsets are source seconds minus reference seconds. All members share cut boundaries.",
+      "Refuses already-cut clips, effects/keyframes and unsupported media to protect existing edits.",
       "  --dry-run      print the plan, write nothing (ALWAYS do this first)",
       "  --force        override a stale ~project.tscproj lock / overwrite an existing .bak",
       "",
@@ -376,12 +384,16 @@ function cmdRebuild(argv: string[]) {
     segs = parseKeep(keep);
   }
 
-  const plan = planRebuild(doc, segs);
+  const syncFile = flag(argv, "--sync-groups");
+  const plan = planRebuild(doc, segs, { syncGroups: syncFile ? JSON.parse(readFileSync(resolve(syncFile), "utf8")) : undefined });
   console.log(`rebuild plan (${plan.segmentCount} segments, ${plan.totalSeconds.toFixed(1)}s total):`);
   for (const e of plan.entries) {
     console.log(
       `  src ${e.src}  ${e.sourceStart.toFixed(2)}-${e.sourceEnd.toFixed(2)}s  →  timeline ${e.timelineStart.toFixed(2)}-${e.timelineEnd.toFixed(2)}s  (${e.trackCount} track[s])`,
     );
+    for (const member of e.sources.slice(1)) {
+      console.log(`    synced src ${member.src}: ${member.sourceStart.toFixed(3)}-${member.sourceEnd.toFixed(3)}s`);
+    }
   }
   if (dryRun) {
     console.log("\n--dry-run: no files written.");
@@ -751,6 +763,11 @@ const COMMANDS: Record<string, (argv: string[]) => void | Promise<void>> = {
   clips: cmdClips,
   sources: cmdSources,
   rebuild: cmdRebuild,
+  "convert-media": async (argv) => {
+    const project = flag(argv, "--project"), out = flag(argv, "--out");
+    if (!project || !out) throw new Error("convert-media needs --project PATH --out NEW.cmproj");
+    console.log(JSON.stringify(await convertMedia({ project, out, dryRun: has(argv, "--dry-run"), acknowledgeCursorLoss: has(argv, "--acknowledge-cursor-loss") }), null, 2));
+  },
   "export-audio": cmdExportAudio,
   "export-video": cmdExportVideo,
   captions: cmdCaptions,

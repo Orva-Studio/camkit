@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { parseKeep, parseKeepJson, planRebuild, applyRebuild } from "../src/rebuild.ts";
+import {
+  parseKeep,
+  parseKeepJson,
+  planRebuild,
+  applyRebuild,
+} from "../src/rebuild.ts";
 import { tracks } from "../src/project.ts";
 
 const ED = 705600000;
@@ -26,8 +31,24 @@ function makeDoc(): any {
     duration: 200 * ED,
     mediaStart: 0,
     mediaDuration: 200 * ED,
-    video: { _type: "VMFile", id: 12, src: 1, start: 0, duration: 200 * ED, mediaStart: 0, mediaDuration: 200 * ED },
-    audio: { _type: "AMFile", id: 13, src: 1, start: 0, duration: 200 * ED, mediaStart: 0, mediaDuration: 200 * ED },
+    video: {
+      _type: "VMFile",
+      id: 12,
+      src: 1,
+      start: 0,
+      duration: 200 * ED,
+      mediaStart: 0,
+      mediaDuration: 200 * ED,
+    },
+    audio: {
+      _type: "AMFile",
+      id: 13,
+      src: 1,
+      start: 0,
+      duration: 200 * ED,
+      mediaStart: 0,
+      mediaDuration: 200 * ED,
+    },
   };
   const solo = {
     _type: "ScreenVMFile",
@@ -44,8 +65,16 @@ function makeDoc(): any {
     height: 1080,
     videoFormatFrameRate: 30,
     sourceBin: [
-      { id: 1, src: "rec1.trec", sourceTracks: [{ range: [0, 200 * 44100], editRate: 44100 }] },
-      { id: 2, src: "rec2.trec", sourceTracks: [{ range: [0, 100 * 44100], editRate: 44100 }] },
+      {
+        id: 1,
+        src: "rec1.trec",
+        sourceTracks: [{ range: [0, 200 * 44100], editRate: 44100 }],
+      },
+      {
+        id: 2,
+        src: "rec2.trec",
+        sourceTracks: [{ range: [0, 100 * 44100], editRate: 44100 }],
+      },
     ],
     timeline: {
       sceneTrack: {
@@ -130,19 +159,21 @@ describe("planRebuild", () => {
     expect(t1.audio.duration).toBe(5 * ED);
   });
 
-  test("dedups templates per (src, track) on an already-cut timeline", () => {
+  test("refuses an already-cut timeline instead of flattening later clip settings", () => {
     const doc = makeDoc();
     // simulate a prior cut: two clips of src 1 on track 0
-    const second = JSON.parse(JSON.stringify(doc.timeline.sceneTrack.scenes[0].csml.tracks[0].medias[0]));
+    const second = JSON.parse(
+      JSON.stringify(
+        doc.timeline.sceneTrack.scenes[0].csml.tracks[0].medias[0],
+      ),
+    );
     second.id = 99;
     second.start = 50 * ED;
     doc.timeline.sceneTrack.scenes[0].csml.tracks[0].medias.push(second);
 
-    const plan = planRebuild(doc, [{ src: 1, start: 0, end: 5 }]);
-    // one clone per track, not per existing clip
-    expect(plan.entries[0].trackCount).toBe(2);
-    expect(plan.newMedias[0]).toHaveLength(1);
-    expect(plan.newMedias[1]).toHaveLength(1);
+    expect(() => planRebuild(doc, [{ src: 1, start: 0, end: 5 }])).toThrow(
+      /Already-cut/,
+    );
   });
 
   test("assigns fresh non-colliding ids, including nested video/audio", () => {
@@ -172,7 +203,9 @@ describe("planRebuild", () => {
   });
 
   test("rejects a src with no timeline clip", () => {
-    expect(() => planRebuild(makeDoc(), [{ src: 7, start: 0, end: 1 }])).toThrow(/No timeline clip uses src 7/);
+    expect(() =>
+      planRebuild(makeDoc(), [{ src: 7, start: 0, end: 1 }]),
+    ).toThrow(/No timeline clip uses src 7/);
   });
 
   test("rejects an empty segment list", () => {
@@ -196,5 +229,111 @@ describe("applyRebuild", () => {
     expect(ts[0].medias).toHaveLength(1);
     expect(ts[1].medias).toHaveLength(1);
     expect(ts[0].medias[0].duration).toBe(5 * ED);
+  });
+});
+
+describe("validation and synchronized sources", () => {
+  test("rejects malformed JSON, numeric strings, NaN and zero-frame cuts", () => {
+    for (const input of [
+      null,
+      {},
+      { keep: [{}] },
+      [{ src: 1, start: "0", end: 2 }],
+      [{ src: 1, start: NaN, end: 2 }],
+    ])
+      expect(() => parseKeepJson(input)).toThrow();
+    expect(() => parseKeep("1:1..2-4")).toThrow();
+    expect(() =>
+      planRebuild(makeDoc(), [{ src: 1, start: 0.001, end: 0.002 }]),
+    ).toThrow(/rounding/);
+    expect(() =>
+      planRebuild(makeDoc(), [{ src: 1, start: 0, end: 201 }]),
+    ).toThrow(/bounds/);
+  });
+  test("rejects effects, keyframes, captions, speed changes and extra scenes", () => {
+    for (const update of [
+      (m: any) => (m.effects = [{ id: 30 }]),
+      (m: any) => (m.animationTracks = { x: [1] }),
+      (m: any) => (m.scalar = 2),
+      (m: any) => (m._type = "Callout"),
+      (m: any) => (m.parameters = { scale: { keyframes: [1] } }),
+    ]) {
+      const d = makeDoc();
+      update(tracks(d)[0].medias[0]);
+      expect(() => planRebuild(d, [{ src: 1, start: 0, end: 1 }])).toThrow();
+    }
+    const d = makeDoc();
+    d.timeline.sceneTrack.scenes.push({ csml: { tracks: [] } });
+    expect(() => planRebuild(d, [{ src: 1, start: 0, end: 1 }])).toThrow(
+      /single-scene/,
+    );
+  });
+  function separate(): any {
+    const d = makeDoc();
+    tracks(d)[0].medias.pop();
+    const audio = structuredClone(tracks(d)[1].medias[0].audio);
+    audio.src = 2;
+    audio.trackNumber = 0;
+    tracks(d)[1].medias = [audio];
+    return d;
+  }
+  test("offset audio shares duration and timeline boundaries without serializing sources", () => {
+    const d = separate();
+    const p = planRebuild(
+      d,
+      [
+        { src: 1, start: 1, end: 2 },
+        { src: 1, start: 4, end: 6 },
+      ],
+      { syncGroups: [{ sources: [{ src: 1 }, { src: 2, offset: 0.007 }] }] },
+    );
+    expect(p.totalSeconds).toBe(3);
+    expect(p.newMedias[1].map((m) => m.start)).toEqual(
+      p.newMedias[0].map((m) => m.start),
+    );
+    expect(p.newMedias[1][0].mediaStart - p.newMedias[0][0].mediaStart).toBe(
+      Math.round(0.007 * ED),
+    );
+    expect(
+      new Set(
+        Object.values(p.newMedias)
+          .flat()
+          .map((m) => m.id),
+      ).size,
+    ).toBe(4);
+    expect(p.entries[0].sources).toHaveLength(2);
+  });
+  test("validates every member's bounds, duplicate membership and shared tracks", () => {
+    const d = separate();
+    expect(() =>
+      planRebuild(d, [{ src: 1, start: 99, end: 101 }], {
+        syncGroups: [{ sources: [{ src: 1 }, { src: 2 }] }],
+      }),
+    ).toThrow(/bounds/);
+    expect(() =>
+      planRebuild(d, [{ src: 1, start: 0, end: 1 }], {
+        syncGroups: [{ sources: [{ src: 1 }, { src: 2, offset: -1 }] }],
+      }),
+    ).toThrow(/bounds/);
+    expect(() =>
+      planRebuild(d, [{ src: 1, start: 0, end: 1 }], {
+        syncGroups: [{ sources: [{ src: 1 }, { src: 1 }] }],
+      }),
+    ).toThrow();
+    expect(() =>
+      planRebuild(makeDoc(), [{ src: 1, start: 0, end: 1 }], {
+        syncGroups: [{ sources: [{ src: 1 }, { src: 2 }] }],
+      }),
+    ).toThrow(/distinct tracks/);
+    expect(() =>
+      planRebuild(d, [{ src: 2, start: 0, end: 1 }], {
+        syncGroups: [{ sources: [{ src: 1 }, { src: 2 }] }],
+      }),
+    ).toThrow(/reference/);
+  });
+  test("reports actual snapped boundaries", () => {
+    const p = planRebuild(makeDoc(), [{ src: 1, start: 1.01, end: 2.01 }]);
+    expect(p.entries[0].sourceStart).toBe(1);
+    expect(p.entries[0].sourceEnd).toBe(2);
   });
 });

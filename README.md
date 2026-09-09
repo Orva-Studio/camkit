@@ -93,3 +93,10 @@ also has `camkit <command> --help`.
   kept ranges with `camkit silences` before finalizing a cut.
 - After a rebuild the project is already cut and `.bak` holds the original;
   to recut, restore the `.bak` first or you'll back up the cut file.
+
+### Separate-media rough cuts
+
+For editable screen/camera/audio cuts using converted MP4/WAV media, see
+[the separate-media workflow](docs/separate-media.md). Includes synchronized
+source groups, conversion into a new project, and validation that refuses
+unsupported existing edits.
