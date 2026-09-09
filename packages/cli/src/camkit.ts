@@ -391,6 +391,9 @@ function cmdRebuild(argv: string[]) {
     console.log(
       `  src ${e.src}  ${e.sourceStart.toFixed(2)}-${e.sourceEnd.toFixed(2)}s  →  timeline ${e.timelineStart.toFixed(2)}-${e.timelineEnd.toFixed(2)}s  (${e.trackCount} track[s])`,
     );
+    for (const member of e.sources.slice(1)) {
+      console.log(`    synced src ${member.src}: ${member.sourceStart.toFixed(3)}-${member.sourceEnd.toFixed(3)}s`);
+    }
   }
   if (dryRun) {
     console.log("\n--dry-run: no files written.");
